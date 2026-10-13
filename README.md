@@ -54,7 +54,7 @@ ctest --test-dir build -C Release --output-on-failure
 
 可用 `FETCHCONTENT_SOURCE_DIR_JUCE`、`FETCHCONTENT_SOURCE_DIR_OPUS`、`FETCHCONTENT_SOURCE_DIR_AOO`、`FETCHCONTENT_SOURCE_DIR_MBEDTLS` 指定本地依赖；项目下 `.deps/JUCE`、`.deps/opus`、`.deps/aoo`、`.deps/mbedtls` 也会自动识别。
 
-macOS Universal 构建可增加 `-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"`。当前提供本机构建产物，跨架构与 Windows 采集仍需对应真机验证。
+macOS Universal 构建可增加 `-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"`。CI 默认构建 macOS arm64 和 Windows x64；其他架构与 Windows 采集仍需对应真机验证。
 
 ## 配置与调试
 
@@ -69,7 +69,7 @@ macOS Universal 构建可增加 `-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"`。当
 
 `enjoysync_tests` 使用真实 UDP / DTLS / AOO / Opus / PCM 链路和合成音频，验证设置持久化、身份去重、双向播放、静音、错误密钥、IPv4 / IPv6、心跳、重连、主动断开和同时拨号。测试不采集真实系统声音。
 
-系统录音授权、真实播放设备延迟、蓝牙、睡眠唤醒、声卡热插拔和跨公网连接需要真机验证。Windows 后端与 CI 配置已经提供，但在完成 Windows 构建与真机测试前，不宣称 Windows 可交付。DRM 保护或独占音频路径可能无法被系统回环 API 采集。
+GitHub Actions 对 Windows x64 和 macOS arm64 执行 Release 编译及集成测试，结果以具体运行记录为准。系统录音授权、真实播放设备延迟、蓝牙、睡眠唤醒、声卡热插拔和跨公网连接需要真机验证。Windows 双机验收步骤见 `docs/windows-testing.md`。DRM 保护或独占音频路径可能无法被系统回环 API 采集。
 
 当前每台设备最多保存 16 个对端，每台设备保存一个主要连接地址；通过新地址成功连接到已知设备后，会更新该设备的主要地址。域名会在每次重连时重新解析。系统 DNS 查询运行在独立线程，退出时可能等待系统解析超时。
 

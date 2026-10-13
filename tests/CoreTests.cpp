@@ -73,6 +73,28 @@ static void settingsTests() {
     check(retryDelayMs(0) == 1000 && retryDelayMs(100) <= 32000, "retry backoff unbounded");
     std::cout << "PASS settings, endpoint normalization and bounded backoff\n";
 }
+static void sourceOverflowTests() {
+    AudioEngine engine;
+    engine.setCodec(true); engine.configureCapture(44100); engine.setCapturing(true);
+    Address endpoint; endpoint.size = sizeof(sockaddr_in);
+    auto* address = reinterpret_cast<sockaddr_in*>(&endpoint.storage);
+    address->sin_family = AF_INET; address->sin_port = htons(51000);
+    engine.setSending(endpoint, 1, true);
+    std::array<float, 441> tone; tone.fill(0.1f);
+    bool overflowed = false;
+    // A stalled sender fills both the source queue and the non-bypass resampler.
+    for (int i = 0; i < 32; ++i) {
+        engine.pushCapture(tone.data(), tone.data(), 441, aoo_getCurrentNtpTime());
+        overflowed |= engine.captureResult.load() == kAooErrorOverflow;
+    }
+    check(overflowed, "source overflow regression did not fill the buffer");
+    auto discard = [](void*, const AooByte*, AooInt32 size, const void*, AooAddrSize, AooFlag) -> AooInt32 { return size; };
+    engine.pump(discard, nullptr);
+    engine.pushCapture(tone.data(), tone.data(), 441, aoo_getCurrentNtpTime());
+    check(engine.captureResult.load() == kAooOk, "44.1 kHz source remained stuck after send buffer overflow");
+    engine.pump(discard, nullptr);
+    std::cout << "PASS 44.1 kHz source recovers from sender buffer overflow\n";
+}
 static void transportTests() {
     Settings a, b, c;
     int base = 53000 + juce::Random::getSystemRandom().nextInt(6000);
@@ -169,7 +191,7 @@ int main(int argc, char** argv) {
     try {
         if (argc > 1 && juce::String(argv[1]) == "--simultaneous") {
             for (int i = 0; i < 8; ++i) simultaneousTests();
-        } else { settingsTests(); transportTests(); simultaneousTests(); }
+    } else { settingsTests(); sourceOverflowTests(); transportTests(); simultaneousTests(); }
     }
     catch (const std::exception& e) { std::cerr << "FAIL " << e.what() << "\n"; result = 1; }
     aoo_terminate(); return result;

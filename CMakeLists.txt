@@ -56,6 +56,7 @@ target_compile_definitions(enjoysync_core PUBLIC JUCE_WEB_BROWSER=0 JUCE_USE_CUR
     JUCE_MODAL_LOOPS_PERMITTED=0)
 target_link_libraries(enjoysync_core PUBLIC juce::juce_audio_devices Aoo::aoo mbedtls)
 if(WIN32)
+    target_compile_definitions(enjoysync_core PUBLIC NOMINMAX)
     target_link_libraries(enjoysync_core PUBLIC ws2_32)
 endif()
 

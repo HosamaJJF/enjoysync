@@ -80,6 +80,12 @@ void AudioEngine::pushCapture(const float* left, const float* right, int samples
         if (captureFill == captureBlock) {
             float* channels[] {captureLeft.data(), captureRight.data()};
             captureResult = AooSource_process(source, channels, captureBlock, captureTime);
+            if (captureResult.load() == kAooErrorOverflow) {
+                // This AOO revision checks resampler.write() before draining it.
+                // A full resampler otherwise stays full even after send() resumes.
+                // Start a fresh stream on the next callback to discard stale audio.
+                AooSource_startStream(source, 0, nullptr);
+            }
             captureFill = 0;
         }
     }
