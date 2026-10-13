@@ -1,0 +1,88 @@
+cmake_minimum_required(VERSION 3.25)
+if(APPLE)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "14.2" CACHE STRING "Minimum macOS version")
+endif()
+project(EnjoySync VERSION 0.1.0 LANGUAGES C CXX)
+# Keep Windows preview builds portable without a separate VC++ runtime install.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_OBJCXX_STANDARD 20)
+set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+include(FetchContent)
+include(CTest)
+list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+set(enjoysync_build_testing "${BUILD_TESTING}")
+set(BUILD_TESTING OFF)
+
+# Source overrides keep local/offline builds possible; every download is pinned.
+foreach(dep IN ITEMS JUCE opus aoo mbedtls)
+    string(TOUPPER "${dep}" upper)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.deps/${dep}/CMakeLists.txt")
+        set(FETCHCONTENT_SOURCE_DIR_${upper} "${CMAKE_CURRENT_SOURCE_DIR}/.deps/${dep}" CACHE PATH "Local ${dep}")
+    endif()
+endforeach()
+FetchContent_Declare(JUCE GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
+    GIT_TAG 3fb5cbc0340758596dac39f7c8de47d562b4896e GIT_SUBMODULES "")
+set(OPUS_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(OPUS_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+set(OPUS_STATIC_RUNTIME ON CACHE BOOL "" FORCE)
+FetchContent_Declare(opus URL https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz
+    URL_HASH SHA256=6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1)
+set(AOO_LOCAL_OPUS OFF CACHE BOOL "" FORCE)
+set(AOO_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(AOO_BUILD_SERVER OFF CACHE BOOL "" FORCE)
+set(AOO_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(AOO_BUILD_PD_EXTERNAL OFF CACHE BOOL "" FORCE)
+set(AOO_INSTALL_LIBRARY OFF CACHE BOOL "" FORCE)
+set(AOO_NET OFF CACHE BOOL "" FORCE)
+set(AOO_USE_IPV6 ON CACHE BOOL "" FORCE)
+FetchContent_Declare(aoo GIT_REPOSITORY https://github.com/Spacechild1/aoo.git
+    GIT_TAG dc2a5be2962ba02d6cebe297f31f2774f34e7bc7 GIT_SUBMODULES "")
+set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
+set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+set(USE_SHARED_MBEDTLS_LIBRARY OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(mbedtls GIT_REPOSITORY https://github.com/Mbed-TLS/mbedtls.git
+    GIT_TAG 068ff080b369adfac81509f9b57b2afabaf82dc5 GIT_SUBMODULES framework)
+FetchContent_MakeAvailable(JUCE opus aoo mbedtls)
+set(BUILD_TESTING "${enjoysync_build_testing}")
+
+add_library(enjoysync_core STATIC
+    src/core/Settings.cpp src/net/Socket.cpp src/net/SecureChannel.cpp
+    src/audio/AudioEngine.cpp src/net/Transport.cpp)
+target_include_directories(enjoysync_core PUBLIC src)
+target_compile_options(enjoysync_core PUBLIC "$<$<CXX_COMPILER_ID:MSVC>:/utf-8>")
+target_compile_definitions(enjoysync_core PUBLIC JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
+    JUCE_MODAL_LOOPS_PERMITTED=0)
+target_link_libraries(enjoysync_core PUBLIC juce::juce_audio_devices Aoo::aoo mbedtls)
+if(WIN32)
+    target_link_libraries(enjoysync_core PUBLIC ws2_32)
+endif()
+
+juce_add_gui_app(EnjoySync PRODUCT_NAME "EnjoySync" COMPANY_NAME "EnjoySync"
+    ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/assets/icon.png"
+    BUNDLE_ID "app.enjoysync.desktop" VERSION ${PROJECT_VERSION}
+    PLIST_TO_MERGE "<plist><dict><key>NSAudioCaptureUsageDescription</key><string>EnjoySync captures system audio to share it with devices you connect to.</string><key>NSLocalNetworkUsageDescription</key><string>EnjoySync connects directly to your audio devices on the local network.</string><key>NSHighResolutionCapable</key><true/></dict></plist>")
+target_sources(EnjoySync PRIVATE src/app/Main.cpp src/app/Controller.cpp src/app/MainView.cpp)
+target_link_libraries(EnjoySync PRIVATE enjoysync_core juce::juce_gui_extra)
+include(cmake/Notices.cmake)
+if(APPLE)
+    enable_language(OBJCXX)
+    target_sources(EnjoySync PRIVATE src/platform/CaptureMac.mm src/platform/DesktopMac.mm)
+    set_source_files_properties(src/platform/CaptureMac.mm src/platform/DesktopMac.mm
+        PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    target_link_libraries(EnjoySync PRIVATE "-framework CoreAudio" "-framework AudioToolbox" "-framework AppKit")
+    target_link_options(EnjoySync PRIVATE "-Wl,-dead_strip_dylibs")
+elseif(WIN32)
+    target_sources(EnjoySync PRIVATE src/platform/CaptureWindows.cpp src/platform/DesktopWindows.cpp)
+    target_compile_definitions(EnjoySync PRIVATE _WIN32_WINNT=0x0A00 WINVER=0x0A00)
+    target_link_libraries(EnjoySync PRIVATE ole32 avrt mmdevapi mfplat mfuuid)
+else()
+    message(FATAL_ERROR "EnjoySync desktop currently supports macOS and Windows only")
+endif()
+if(BUILD_TESTING)
+    add_executable(enjoysync_tests tests/CoreTests.cpp)
+    target_link_libraries(enjoysync_tests PRIVATE enjoysync_core)
+    add_test(NAME enjoysync_core COMMAND enjoysync_tests)
+    set_tests_properties(enjoysync_core PROPERTIES TIMEOUT 45)
+endif()

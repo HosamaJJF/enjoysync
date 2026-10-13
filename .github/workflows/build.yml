@@ -1,0 +1,61 @@
+name: Build and test
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  desktop:
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            platform: macOS
+            cmake-args: ""
+          - os: windows-2025
+            platform: windows-x64
+            cmake-args: -A x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build ${{ matrix.cmake-args }} -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+      - name: Build
+        run: cmake --build build --config Release --parallel 4
+      - name: Test encrypted audio and connection lifecycle
+        run: ctest --test-dir build -C Release --output-on-failure
+      - name: Package Windows portable build
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $package = 'build/package/EnjoySync'
+          New-Item -ItemType Directory -Force -Path $package, 'build/packages' | Out-Null
+          Copy-Item 'build/EnjoySync_artefacts/Release/EnjoySync.exe' $package
+          Copy-Item 'build/EnjoySync_artefacts/Release/licenses' $package -Recurse
+          Copy-Item 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md' $package
+          Copy-Item 'docs' $package -Recurse
+          Compress-Archive -Path $package -DestinationPath 'build/packages/EnjoySync-0.1.0-windows-x64.zip'
+      - name: Package macOS app with executable permissions
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir -p build/package/EnjoySync build/packages
+          ditto build/EnjoySync_artefacts/Release/EnjoySync.app build/package/EnjoySync/EnjoySync.app
+          cp README.md LICENSE THIRD_PARTY_NOTICES.md build/package/EnjoySync/
+          cp -R docs build/package/EnjoySync/
+          codesign --force --deep --sign - build/package/EnjoySync/EnjoySync.app
+          codesign --verify --deep --strict build/package/EnjoySync/EnjoySync.app
+          ditto -c -k --keepParent build/package/EnjoySync "build/packages/EnjoySync-0.1.0-macOS-$(uname -m).zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EnjoySync-${{ matrix.platform }}
+          path: build/packages/*.zip
+          if-no-files-found: error
+      - name: Upload diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-${{ matrix.platform }}
+          path: |
+            build/Testing/Temporary/
+            build/CMakeFiles/CMakeConfigureLog.yaml
