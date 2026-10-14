@@ -41,8 +41,7 @@ public:
         : engineA(a), engineB(b), worker([this, &a, &b, initialStallMs, periodicStallMs] {
         std::array<float, 480> tone {}, al {}, ar {}, bl {}, br {};
         std::array<Peaks, 20> history {}; int cursor = 0; double phase = 0;
-        auto next = std::chrono::steady_clock::now();
-        auto lastCallback = next - std::chrono::milliseconds(10);
+        auto lastCallback = std::chrono::steady_clock::now() - std::chrono::milliseconds(10);
         std::this_thread::sleep_for(std::chrono::milliseconds(initialStallMs));
         // Simulate an audio device clock independently of the runner's scheduling.
         auto sampleTime = aoo_getCurrentNtpTime();
@@ -65,11 +64,9 @@ public:
             lock.unlock();
             if (periodicStallMs > 0 && cursor % 8 == 0)
                 std::this_thread::sleep_for(std::chrono::milliseconds(periodicStallMs));
-            next += std::chrono::milliseconds(10);
-            // A delayed VM thread must not replay missed callbacks in a tight loop.
-            const auto now = std::chrono::steady_clock::now();
-            if (next < now) next = now + std::chrono::milliseconds(10);
-            std::this_thread::sleep_until(next);
+            // A relative wait also prevents short catch-up intervals after a late wakeup.
+            // Sample timestamps above still advance by exactly one audio block.
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }) {}
     ~AudioPump() { running = false; worker.join(); }
