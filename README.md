@@ -1,92 +1,85 @@
 # EnjoySync
 
-轻量的 macOS / Windows 系统声音实时传输工具。使用 SonoBus 同源的 AOO 音频引擎，提供 IP / 域名直连、独立播放控制与后台运行。当前版本 **0.1.0，开发预览版**。
+轻量的跨平台（macOS / Windows）系统声音实时传输工具。
 
-## 已实现
+底层采用与 SonoBus 同源的 AOO 音频引擎，支持局域网或公网 IP / 域名直连。**无需安装虚拟声卡**，开箱即用。
 
-- macOS 14.2+ Core Audio Process Tap；Windows 11 Process Loopback。直接采集系统声音并排除 EnjoySync 自身播放，无需安装虚拟声卡。
-- 可配置 UDP 监听端口（默认 51000），IPv4 / IPv6 独立监听，域名多个地址依次尝试。
-- DTLS 1.2 / AES-128-GCM 加密，使用随机生成的 128-bit 连接密钥进行配对。控制消息和音频共用一个 UDP 端口。
-- 稳定设备身份、重复连接复用、域名 / IP 别名合并、双方同时连接时收敛到单一会话。
-- 独立心跳，意外断线约 5 秒判定离线；指数退避重连，主动断开后停止重试。
-- 每台设备独立选择接收、播放、共享、音量和启动后自动连接；保存设备历史。
-- 48 kHz 双声道，默认 Opus 192 kbps / 10 ms，支持切换 24-bit PCM；最低缓冲 20–200 ms，发生欠载时自动增加，稳定后逐步降低；AOO 动态重采样补偿时钟漂移。
-- Windows 托盘；macOS 菜单栏。关闭窗口继续工作，macOS 后台可隐藏 Dock 图标。
-- 深浅主题默认跟随系统，可在独立设置窗口切换；设备操作使用图标和悬停提示，音量实时显示百分比。
+## 特性
 
-## 使用
+- **免虚拟声卡采集**：基于 macOS 14.2+ `Core Audio Process Tap` 与 Windows 11 `Process Loopback` 直接抓取系统声音，自动排除 EnjoySync 自身播放的音频，避免回声。
+- **低延迟与抗抖动**：48 kHz 双声道，默认使用 Opus（192 kbps / 10 ms），支持切换无损 24-bit PCM。内置 20–200 ms 自适应缓冲与 AOO 动态重采样，自动补偿两端时钟漂移。
+- **单端口加密直连**：控制信令与音频流共用单个 UDP 端口（默认 `51000`），支持 IPv4 / IPv6 双栈与域名解析。采用 DTLS 1.2（AES-128-GCM）加密，通过 128-bit 密钥配对。
+- **稳健的连接管理**：支持断线自动重连（指数退避）、设备身份去重、多地址自动寻路以及双向同时拨号收敛。
+- **独立路由与轻量驻留**：支持多设备同时收发，每台设备可独立控制发送、接收、静音、音量与开机自连。支持托盘（Windows）与菜单栏（macOS，可隐藏 Dock 图标）后台驻留。
 
-1. 两台设备分别运行 EnjoySync。从菜单栏 / 托盘菜单的“设置…”或主窗口右上角的齿轮打开本机设置，复制发送方的连接密钥。接收方填写发送方的 IP / 域名、监听端口和该密钥。
-2. 点击“添加并连接”。连接成功后，两端都会出现对方设备。
-3. 在发送方对应的设备行中开启“共享”图标（向上箭头）。首次采集时，macOS 会请求系统音频录制权限。
-4. 接收方保持“接收”和“播放”开启，即可听到声音。可以同时播放多个设备。
-5. 设备操作图标悬停时显示名称，高亮表示已开启。“播放”只控制本机静音；关闭“接收”会停止订阅音频。“自动连接”在应用下次启动时生效。音量滑块旁显示当前百分比。
-6. 关闭窗口会转为后台运行；单击托盘 / 菜单栏图标恢复窗口，右键打开菜单，选择“退出 EnjoySync”结束传输。macOS 的应用菜单栏也提供“设备”菜单。
+## 快速上手
 
-本机名称、监听端口、连接密钥、输出设备、编码、缓冲和后台 Dock 行为均在独立设置窗口中管理。外观可选择“跟随系统”（默认）、“浅色”或“深色”，切换后立即生效并保存；主窗口支持 `⌘,`（macOS）或 `Ctrl+,`（Windows）打开设置。
+1. **获取密钥**：在两台设备上启动 EnjoySync，打开右上角“设置”（或按 `⌘,` / `Ctrl+,`），复制发送端的**连接密钥**。
+2. **添加设备**：在接收端填入发送端的 IP / 域名（支持直接粘贴 `IP:端口` 格式）、端口和密钥，点击**添加并连接**。
+3. **开始传输**：连接成功后，在发送端的设备列表中点亮**共享**图标（向上箭头，macOS 首次使用需授权系统录音权限）；接收端保持**接收**与**播放**开启即可听到声音。
 
-支持分别填写主机和端口，也可以直接粘贴 `192.168.1.20:51000`、`computer.example.com:51000` 或 `[2001:db8::20]:51000`。地址中带端口时，以该端口为准，添加成功后会自动拆分回两个输入框。裸 IPv6（如 `2001:db8::20`）和带接口标识的 IPv6 链路本地地址（如 `fe80::1%en0`）使用独立端口栏。旧版本保存的 `IP:端口` 记录会在加载时自动修复。
+> **关于连接与使用：**
+>
+> - **公网 / 跨网段连接**：不包含中继服务器与自动 NAT 穿透。跨公网直连需确保对端 UDP 端口可达。
+>
+> - **播放机制**：发送端开启共享后，其本机依然会正常播放声音。本项目定位于“低延迟实时转播”，不接管系统播放时钟，也不提供多扬声器高精度同步（Multi-room Sync）。
+>
+> - **采集限制**：受系统底层 API 限制，独占模式（Exclusive Mode）或带有 DRM 保护的音频流可能无法被采集。
 
-公网直连需要对方地址可达并允许对应 UDP 端口；IPv4 NAT 通常需要端口映射。首版不包含中继或自动 NAT 穿透。
+## 下载与构建
 
-发送端原本的系统声音保持正常播放。此版本以实时转播为目标，不接管其他应用的播放时间，也不提供多扬声器统一时刻播放。
+测试版构建可直接从 GitHub Actions 的 **Build and test → Artifacts** 中下载（Windows 解压后直接运行 `EnjoySync.exe`，无需额外安装虚拟声卡或 VC++ 运行库）。
 
-## 构建
+### 从源码构建
 
-GitHub 仓库的 **Actions → Build and test → 成功的运行 → Artifacts** 提供测试构建。Windows 下载 `EnjoySync-windows-x64`，解开下载文件及其中的 ZIP 后运行 `EnjoySync/EnjoySync.exe`，无需安装虚拟声卡或额外的 VC++ 运行库。压缩包包含使用说明与第三方许可证。
+**环境要求**：CMake 3.25+、Git、Python 3、C++20 编译器。首次配置会自动拉取固定版本的开源依赖（也可将依赖放入 `.deps/JUCE`、`opus`、`aoo`、`mbedtls` 目录，或通过 `FETCHCONTENT_SOURCE_DIR_<NAME>` 指定本地路径）。
 
-需要 CMake 3.25+、Git、Python 3 和 C++20 编译器。首次配置会下载固定版本的开源依赖，无需安装浏览器运行时。
-
-macOS：Xcode 与 macOS 14.2+ SDK；Ninja 可选。
+**macOS**（需 Xcode 与 macOS 14.2+ SDK）：
 
 ```sh
 cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
 cmake --build build-release --parallel 6
 ctest --test-dir build-release --output-on-failure
 open build-release/EnjoySync_artefacts/Release/EnjoySync.app
+
 ```
 
-Windows：Visual Studio 2022 或更新版本、Desktop development with C++、近期 Windows SDK。
+*(注：如需构建 Universal 通用二进制，可追加 `-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"`)*
+
+**Windows**（需 Visual Studio 2022+ 及 C++ 桌面开发组件）：
 
 ```powershell
 cmake -S . -B build -A x64 -DBUILD_TESTING=ON
 cmake --build build --config Release --parallel 4
 ctest --test-dir build -C Release --output-on-failure
 .\build\EnjoySync_artefacts\Release\EnjoySync.exe
+
 ```
-
-可用 `FETCHCONTENT_SOURCE_DIR_JUCE`、`FETCHCONTENT_SOURCE_DIR_OPUS`、`FETCHCONTENT_SOURCE_DIR_AOO`、`FETCHCONTENT_SOURCE_DIR_MBEDTLS` 指定本地依赖；项目下 `.deps/JUCE`、`.deps/opus`、`.deps/aoo`、`.deps/mbedtls` 也会自动识别。
-
-macOS Universal 构建可增加 `-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"`。CI 默认构建 macOS arm64 和 Windows x64；其他架构与 Windows 采集仍需对应真机验证。
 
 ## 配置与调试
 
-- macOS：`~/Library/Application Support/EnjoySync/settings.json`
-- Windows：`%APPDATA%\EnjoySync\settings.json`
-- 使用 `--profile-dir /absolute/path` 可指定开发配置目录。
-- 配置包含设备连接密钥。macOS 保存时限制为当前用户读写，采用临时文件原子替换。
-- 默认将连接、断线原因、DTLS 错误码、UDP 错误 / 丢弃计数和网络线程停顿记录到配置目录下的 `logs/transport.log`，每 30 秒记录连接健康信息。macOS 默认路径为 `~/Library/Application Support/EnjoySync/logs/transport.log`，Windows 为 `%APPDATA%\EnjoySync\logs\transport.log`。启动时保留旧日志最后约 512 KiB。
-- 设置 `ENJOYSYNC_TRACE=1` 可将同样的诊断信息同时输出到标准错误；日志不记录连接密钥、控制消息内容或音频。
-- 监听端口改变后会重建会话；仅勾选自动连接的设备会自动恢复。
+配置文件与传输日志默认保存在系统应用数据目录下：
 
-## 验证范围与初版边界
+- **macOS**：`~/Library/Application Support/EnjoySync/`
+- **Windows**：`%APPDATA%\EnjoySync\`
 
-`enjoysync_tests` 使用真实 UDP / DTLS / AOO / Opus / PCM 链路和合成音频，验证设置持久化、身份去重、双向播放、静音、错误密钥、IPv4 / IPv6、心跳、重连、主动断开和同时拨号。UDP 中继故障注入覆盖零散丢包、短时双向中断、单向超时和旧会话尚存时的同端口重启；可运行 `enjoysync_tests --recovery` 单独验证恢复场景。测试不采集真实系统声音。
+**常用调试手段**：
 
-GitHub Actions 对 Windows x64 和 macOS arm64 执行 Release 编译及集成测试，结果以具体运行记录为准。系统录音授权、真实播放设备延迟、蓝牙、睡眠唤醒、声卡热插拔和跨公网连接需要真机验证。Windows 双机验收步骤见 `docs/windows-testing.md`。DRM 保护或独占音频路径可能无法被系统回环 API 采集。
+- **自定义配置目录**：启动时传入 `--profile-dir /path/to/dir` 可隔离测试配置。
+- **查看日志**：连接状态、DTLS 错误码及丢包统计默认记录在配置目录的 `logs/transport.log` 中（不包含密钥与音频内容）。
+- **终端实时输出**：设置环境变量 `ENJOYSYNC_TRACE=1` 可将诊断信息同步输出至 `stderr`。
+- **网络恢复测试**：运行 `enjoysync_tests --recovery` 可通过内置的 UDP 故障注入测试丢包、断流与同端口会话重建。Windows 双机测试流程详见 `docs/windows-testing.md`。
 
-当前每台设备最多保存 16 个对端，每台设备保存一个主要连接地址；通过新地址成功连接到已知设备后，会更新该设备的主要地址。已建立连接失联后，优先重试最近成功的地址；该尝试失败后重新解析域名。系统 DNS 查询运行在独立线程，退出时可能等待系统解析超时。
+## 目录结构
 
-## 代码结构
+- `src/core`：配置持久化、设备身份管理、地址解析与规范化
+- `src/net`：双栈 UDP、DTLS 加密通道、连接状态机与重连策略
+- `src/audio`：AOO 编解码封装、自适应缓冲、多设备混音
+- `src/platform`：macOS / Windows 原生系统音频采集与桌面集成
+- `src/app`：应用生命周期、GUI 界面与状态协调
+- `tests`：基于真实回环链路的集成测试
+- `docs/architecture.md`：线程模型、通信协议与状态机设计说明
 
-- `src/core`：配置、设备身份、地址规范化。
-- `src/net`：双栈 UDP、DTLS、连接状态机、重连。
-- `src/audio`：AOO 编解码、缓冲、逐设备混音。
-- `src/platform`：系统音频采集、平台桌面行为。
-- `src/app`：应用生命周期、桌面界面与配置协调。
-- `tests`：真实回环链路集成测试。
-- `docs/architecture.md`：线程、协议与状态说明。
+## 开源协议
 
-## 开源许可
-
-EnjoySync 原创代码采用 **AGPL-3.0-or-later**。第三方组件保留各自许可，详见 `LICENSE` 和 `THIRD_PARTY_NOTICES.md`。本项目参考 SonoBus 的技术路线，独立实现应用逻辑，未复制 SonoBus 应用源码。
+EnjoySync 原创代码基于 **AGPL-3.0-or-later** 协议开源。项目设计参考了 SonoBus 的技术路线并独立实现。第三方依赖库保留其各自许可，详见 `LICENSE` 与 `THIRD_PARTY_NOTICES.md`。
