@@ -1,10 +1,33 @@
 #include "Socket.h"
 #include "core/Settings.h"
-#if !JUCE_WINDOWS
+#if JUCE_WINDOWS
+ #include <mstcpip.h>
+#else
  #include <fcntl.h>
  #include <cerrno>
 #endif
 namespace enjoysync {
+static int socketError() {
+   #if JUCE_WINDOWS
+    return WSAGetLastError();
+   #else
+    return errno;
+   #endif
+}
+static bool wouldBlock(int error) {
+   #if JUCE_WINDOWS
+    return error == WSAEWOULDBLOCK;
+   #else
+    return error == EAGAIN || error == EWOULDBLOCK;
+   #endif
+}
+static bool temporarySendError(int error) {
+   #if JUCE_WINDOWS
+    return wouldBlock(error) || error == WSAENOBUFS || error == WSAEINTR;
+   #else
+    return wouldBlock(error) || error == ENOBUFS || error == EINTR;
+   #endif
+}
 juce::String Address::host() const {
     char text[NI_MAXHOST] {};
     getnameinfo(data(), size, text, sizeof(text), nullptr, 0, NI_NUMERICHOST);
@@ -50,7 +73,7 @@ void UdpSocket::close() {
     }
 }
 juce::Result UdpSocket::bind(int port) {
-    close();
+    close(); stats = {}; nextFamily = 0;
     for (int family : {AF_INET, AF_INET6}) {
         auto fd = ::socket(family, SOCK_DGRAM, IPPROTO_UDP);
         if ((std::intptr_t)fd == invalid) continue;
@@ -58,6 +81,12 @@ juce::Result UdpSocket::bind(int port) {
         if (family == AF_INET6) setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, reinterpret_cast<const char*>(&yes), sizeof(yes));
         int buffer = 1 << 20;
         setsockopt(fd, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&buffer), sizeof(buffer));
+        setsockopt(fd, SOL_SOCKET, SO_SNDBUF, reinterpret_cast<const char*>(&buffer), sizeof(buffer));
+       #if JUCE_WINDOWS
+        // An ICMP response to a previous UDP packet must not poison this shared listener.
+        BOOL reportReset = FALSE; DWORD returned = 0;
+        WSAIoctl(fd, SIO_UDP_CONNRESET, &reportReset, sizeof(reportReset), nullptr, 0, &returned, nullptr, nullptr);
+       #endif
         Address addr;
         if (family == AF_INET) {
             auto* a = reinterpret_cast<sockaddr_in*>(&addr.storage);
@@ -96,17 +125,25 @@ int UdpSocket::receive(void* data, int capacity, Address& from) {
            #endif
             static_cast<char*>(data), capacity, 0, reinterpret_cast<sockaddr*>(&from.storage), &from.size);
         if (n > 0) return static_cast<int>(n);
+        if (n < 0) {
+            const int error = socketError();
+            if (!wouldBlock(error)) { ++stats.receiveErrors; stats.lastReceiveError = error; }
+        }
     }
     return 0;
 }
 int UdpSocket::send(const void* data, int size, const Address& to) {
     auto handle = to.storage.ss_family == AF_INET6 ? ipv6 : ipv4; if (handle == invalid) return -1;
-    return static_cast<int>(::sendto(
+    const auto result = ::sendto(
        #if JUCE_WINDOWS
         static_cast<SOCKET>(handle),
        #else
         static_cast<int>(handle),
        #endif
-        static_cast<const char*>(data), size, 0, to.data(), to.size));
+        static_cast<const char*>(data), size, 0, to.data(), to.size);
+    if (result >= 0) return static_cast<int>(result);
+    stats.lastSendError = socketError();
+    if (temporarySendError(stats.lastSendError)) { ++stats.sendDrops; return temporarySendFailure; }
+    ++stats.sendErrors; return -1;
 }
 }

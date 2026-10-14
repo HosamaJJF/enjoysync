@@ -43,7 +43,8 @@ void SecureChannel::resetCookie() {
     mbedtls_ssl_set_client_transport_id(&ssl, reinterpret_cast<const unsigned char*>(id.data()), id.size());
 }
 void SecureChannel::enqueue(const void* data, int size) {
-    if (size <= 0 || size > 4096 || packets.size() >= 128) return;
+    if (size <= 0 || size > 4096) return;
+    if (packets.size() >= 128) { ++queueDrops; return; }
     auto* bytes = static_cast<const unsigned char*>(data); packets.emplace_back(bytes, bytes + size);
 }
 int SecureChannel::send(void* user, const unsigned char* data, size_t size) {
@@ -52,6 +53,11 @@ int SecureChannel::send(void* user, const unsigned char* data, size_t size) {
         std::copy_n(data + 27, 32, self.clientRandom.begin()); self.hasClientRandom = true;
     }
     int n = self.socket.send(data, (int)size, self.address);
+    // DTLS already tolerates datagram loss. Reporting local UDP congestion as a
+    // fatal TLS error tears down an otherwise healthy session. Drop this packet;
+    // handshake/control retransmission and AOO handle recovery. Do not leave a
+    // WANT_WRITE record pending while the caller moves on to a different packet.
+    if (n == UdpSocket::temporarySendFailure) return (int)size;
     return n < 0 ? MBEDTLS_ERR_NET_SEND_FAILED : n;
 }
 int SecureChannel::receive(void* user, unsigned char* data, size_t size) {
@@ -62,6 +68,10 @@ int SecureChannel::receive(void* user, unsigned char* data, size_t size) {
     std::memcpy(data, packet.data(), packet.size()); return (int)packet.size();
 }
 bool SecureChannel::wouldBlock(int n) { return n == MBEDTLS_ERR_SSL_WANT_READ || n == MBEDTLS_ERR_SSL_WANT_WRITE; }
+juce::String SecureChannel::describeError(int result) {
+    char text[180] {}; mbedtls_strerror(result, text, sizeof(text));
+    return juce::String(result) + " " + juce::String(text);
+}
 int SecureChannel::handshake() {
     if (established) return 0;
     int result = initError != 0 ? initError : mbedtls_ssl_handshake(&ssl);

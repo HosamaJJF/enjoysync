@@ -65,16 +65,17 @@ macOS Universal 构建可增加 `-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"`。CI 
 - Windows：`%APPDATA%\EnjoySync\settings.json`
 - 使用 `--profile-dir /absolute/path` 可指定开发配置目录。
 - 配置包含设备连接密钥。macOS 保存时限制为当前用户读写，采用临时文件原子替换。
-- 设置 `ENJOYSYNC_TRACE=1` 可以输出 DTLS 握手失败原因；不会输出连接密钥或音频。
+- 默认将连接、断线原因、DTLS 错误码、UDP 错误 / 丢弃计数和网络线程停顿记录到配置目录下的 `logs/transport.log`，每 30 秒记录连接健康信息。macOS 默认路径为 `~/Library/Application Support/EnjoySync/logs/transport.log`，Windows 为 `%APPDATA%\EnjoySync\logs\transport.log`。启动时保留旧日志最后约 512 KiB。
+- 设置 `ENJOYSYNC_TRACE=1` 可将同样的诊断信息同时输出到标准错误；日志不记录连接密钥、控制消息内容或音频。
 - 监听端口改变后会重建会话；仅勾选自动连接的设备会自动恢复。
 
 ## 验证范围与初版边界
 
-`enjoysync_tests` 使用真实 UDP / DTLS / AOO / Opus / PCM 链路和合成音频，验证设置持久化、身份去重、双向播放、静音、错误密钥、IPv4 / IPv6、心跳、重连、主动断开和同时拨号。测试不采集真实系统声音。
+`enjoysync_tests` 使用真实 UDP / DTLS / AOO / Opus / PCM 链路和合成音频，验证设置持久化、身份去重、双向播放、静音、错误密钥、IPv4 / IPv6、心跳、重连、主动断开和同时拨号。UDP 中继故障注入覆盖零散丢包、短时双向中断、单向超时和旧会话尚存时的同端口重启；可运行 `enjoysync_tests --recovery` 单独验证恢复场景。测试不采集真实系统声音。
 
 GitHub Actions 对 Windows x64 和 macOS arm64 执行 Release 编译及集成测试，结果以具体运行记录为准。系统录音授权、真实播放设备延迟、蓝牙、睡眠唤醒、声卡热插拔和跨公网连接需要真机验证。Windows 双机验收步骤见 `docs/windows-testing.md`。DRM 保护或独占音频路径可能无法被系统回环 API 采集。
 
-当前每台设备最多保存 16 个对端，每台设备保存一个主要连接地址；通过新地址成功连接到已知设备后，会更新该设备的主要地址。域名会在每次重连时重新解析。系统 DNS 查询运行在独立线程，退出时可能等待系统解析超时。
+当前每台设备最多保存 16 个对端，每台设备保存一个主要连接地址；通过新地址成功连接到已知设备后，会更新该设备的主要地址。已建立连接失联后，优先重试最近成功的地址；该尝试失败后重新解析域名。系统 DNS 查询运行在独立线程，退出时可能等待系统解析超时。
 
 ## 代码结构
 

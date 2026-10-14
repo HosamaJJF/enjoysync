@@ -28,6 +28,12 @@ struct Address {
 std::vector<Address> resolve(const juce::String& host, int port);
 class UdpSocket {
 public:
+    // A transient local send failure is equivalent to a lost UDP datagram.
+    static constexpr int temporarySendFailure = -2;
+    struct Diagnostics {
+        uint64_t sendDrops = 0, sendErrors = 0, receiveErrors = 0;
+        int lastSendError = 0, lastReceiveError = 0;
+    };
     UdpSocket(); ~UdpSocket();
     juce::Result bind(int port);
     void close();
@@ -35,10 +41,12 @@ public:
     int send(const void*, int, const Address&);
     bool hasIPv4() const { return ipv4 != invalid; }
     bool hasIPv6() const { return ipv6 != invalid; }
+    const Diagnostics& diagnostics() const { return stats; }
 private:
     using Handle = std::intptr_t;
     static constexpr Handle invalid = -1;
     Handle ipv4 = invalid, ipv6 = invalid;
     int nextFamily = 0;
+    Diagnostics stats;
 };
 }

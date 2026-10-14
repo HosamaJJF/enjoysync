@@ -18,6 +18,21 @@ static bool connected(Transport& t) { auto p = t.snapshot(); return p.size() == 
 static PeerSettings peerFor(const Settings& target, juce::String host = "127.0.0.1") {
     PeerSettings p; p.host = host; p.port = target.port; p.key = target.key; p.send = true; return p;
 }
+static int availableTestPorts(int count) {
+    // Stay below the default ephemeral range used by browsers and other apps,
+    // and probe both IP families (including Windows excluded port ranges).
+    for (int attempt = 0; attempt < 32; ++attempt) {
+        const int base = 20000 + juce::Random::getSystemRandom().nextInt(16000);
+        std::vector<std::unique_ptr<UdpSocket>> probes;
+        for (int i = 0; i < count; ++i) {
+            auto socket = std::make_unique<UdpSocket>();
+            if (socket->bind(base + i).failed()) break;
+            probes.push_back(std::move(socket));
+        }
+        if ((int)probes.size() == count) return base;
+    }
+    throw std::runtime_error("no free UDP test port group available");
+}
 struct Peaks { float a = 0, b = 0; };
 class AudioPump {
 public:
@@ -129,7 +144,7 @@ static void sourceOverflowTests() {
 }
 static void transportTests() {
     Settings a, b, c;
-    int base = 53000 + juce::Random::getSystemRandom().nextInt(6000);
+    int base = availableTestPorts(3);
     a.port = base; b.port = base + 1; c.port = base + 2;
     AudioEngine aa, ab, ac;
     aa.setCapturing(true); ab.setCapturing(true);
@@ -201,7 +216,7 @@ static void transportTests() {
     std::cout << "PASS manual disconnect, IPv6 audio and graceful close\n";
 }
 static void simultaneousTests() {
-    Settings a, b; a.port = 60000 + juce::Random::getSystemRandom().nextInt(2000); b.port = a.port + 1;
+    Settings a, b; a.port = availableTestPorts(2); b.port = a.port + 1;
     AudioEngine aa, ab; Transport ta(aa, a), tb(ab, b);
     check(ta.start().wasOk() && tb.start().wasOk(), "simultaneous test listener failed");
     ta.addOrConnect(peerFor(b)); tb.addOrConnect(peerFor(a));
@@ -221,6 +236,94 @@ static void simultaneousTests() {
     check(waitFor([&] { return connected(restored) && connected(tb); }), "saved automatic startup connection failed");
     std::cout << "PASS persisted device automatically connects on startup\n";
 }
+static void rapidRestartTests() {
+    Settings a, b;
+    // Force the original client to win the old duplicate-session ID arbitration.
+    a.deviceId = "00000000-0000-0000-0000-000000000001";
+    b.deviceId = "ffffffff-ffff-ffff-ffff-ffffffffffff";
+    a.port = availableTestPorts(2); b.port = a.port + 1;
+    AudioEngine aa, ab; aa.setCapturing(true); ab.setCapturing(true);
+    Transport ta(aa, a);
+    auto tb = std::make_unique<Transport>(ab, b);
+    check(ta.start().wasOk() && tb->start().wasOk(), "rapid restart listeners unavailable");
+    AudioPump pump(aa, ab);
+    ta.addOrConnect(peerFor(b));
+    check(waitFor([&] { return connected(ta) && connected(*tb); }), "rapid restart initial pairing failed");
+    check(pump.measure(500).b > 0.02f, "rapid restart initial audio failed");
+    tb->stop(false); tb.reset();
+    auto invitation = peerFor(a); invitation.autoConnect = true;
+    b.peers = {invitation};
+    tb = std::make_unique<Transport>(ab, b);
+    check(tb->start().wasOk(), "rapid restart listener failed");
+    check(waitFor([&] { return connected(ta) && connected(*tb); }, 1800),
+          "fresh authenticated session was blocked by the old same-endpoint session");
+    check(pump.measure(600).b > 0.02f, "audio failed after rapid same-endpoint replacement");
+    std::cout << "PASS same-endpoint restart replaces stale DTLS session without waiting for heartbeat timeout\n";
+}
+class DatagramRelay {
+public:
+    DatagramRelay(const Settings& a, const Settings& b, int port) {
+        check(socket.bind(port).wasOk(), "UDP impairment relay listener unavailable");
+        aAddress = resolve("127.0.0.1", a.port).at(0); bAddress = resolve("127.0.0.1", b.port).at(0);
+        worker = std::thread([this] {
+            std::array<unsigned char, 4096> packet {}; Address from;
+            while (running) {
+                for (int i = 0; i < 256; ++i) {
+                    const int size = socket.receive(packet.data(), (int)packet.size(), from);
+                    if (size <= 0) break;
+                    const bool fromA = from == aAddress;
+                    if (!fromA && !(from == bAddress)) continue;
+                    const auto sequence = fromA ? ++sequenceA : ++sequenceB;
+                    const int interval = dropEvery.load();
+                    if (blockBoth || (fromA && blockAToB) || (interval > 0 && sequence % interval == 0)) continue;
+                    socket.send(packet.data(), size, fromA ? bAddress : aAddress);
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        });
+    }
+    ~DatagramRelay() { running = false; worker.join(); }
+    std::atomic<bool> blockBoth {false}, blockAToB {false};
+    std::atomic<int> dropEvery {0};
+private:
+    UdpSocket socket;
+    Address aAddress, bAddress;
+    uint64_t sequenceA = 0, sequenceB = 0;
+    std::atomic<bool> running {true};
+    std::thread worker;
+};
+static void impairmentTests() {
+    Settings a, b;
+    a.deviceId = "00000000-0000-0000-0000-000000000001";
+    b.deviceId = "ffffffff-ffff-ffff-ffff-ffffffffffff";
+    a.port = availableTestPorts(3); b.port = a.port + 1;
+    AudioEngine aa, ab; aa.setCapturing(true); ab.setCapturing(true);
+    Transport ta(aa, a), tb(ab, b);
+    check(ta.start().wasOk() && tb.start().wasOk(), "impairment test listeners unavailable");
+    DatagramRelay relay(a, b, a.port + 2);
+    auto peer = peerFor(b); peer.port = a.port + 2;
+    AudioPump pump(aa, ab);
+    ta.addOrConnect(peer);
+    check(waitFor([&] { return connected(ta) && connected(tb); }), "pairing through UDP relay failed");
+    check(pump.measure(500).b > 0.02f, "audio through UDP relay failed");
+    relay.dropEvery = 13;
+    check(!waitFor([&] { return !connected(ta) || !connected(tb); }, 1500), "isolated UDP loss disconnected a healthy session");
+    relay.dropEvery = 0; relay.blockBoth = true;
+    check(!waitFor([&] { return !connected(ta) || !connected(tb); }, 1200), "short UDP outage disconnected a healthy session");
+    relay.blockBoth = false;
+    check(pump.measure(800).b > 0.02f, "audio failed to recover from a short UDP outage");
+    std::cout << "PASS packet loss and a short bidirectional outage retain the live DTLS session\n";
+    // Only B loses incoming traffic. A retains the old session while B retries.
+    relay.blockAToB = true;
+    check(waitFor([&] { return !connected(tb); }, 6500), "one-way outage did not reach heartbeat timeout");
+    check(connected(ta), "healthy reverse path unexpectedly timed out");
+    relay.blockAToB = false;
+    const auto restoredAt = std::chrono::steady_clock::now();
+    check(waitFor([&] { return connected(ta) && connected(tb); }, 2500), "one-way outage recovery remained blocked by a stale session");
+    const auto recoveryMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - restoredAt).count();
+    check(pump.measure(800).b > 0.02f, "audio failed after one-way outage recovery");
+    std::cout << "PASS one-way timeout recovers connection in " << recoveryMs << " ms after the path returns\n";
+}
 int main(int argc, char** argv) {
     juce::ScopedJuceInitialiser_GUI juceRuntime;
     aoo_initialize(nullptr);
@@ -228,7 +331,8 @@ int main(int argc, char** argv) {
     try {
         if (argc > 1 && juce::String(argv[1]) == "--simultaneous") {
             for (int i = 0; i < 8; ++i) simultaneousTests();
-    } else { settingsTests(); sourceOverflowTests(); transportTests(); simultaneousTests(); }
+        } else if (argc > 1 && juce::String(argv[1]) == "--recovery") { rapidRestartTests(); impairmentTests(); }
+        else { settingsTests(); sourceOverflowTests(); transportTests(); simultaneousTests(); rapidRestartTests(); impairmentTests(); }
     }
     catch (const std::exception& e) { std::cerr << "FAIL " << e.what() << "\n"; result = 1; }
     aoo_terminate(); return result;

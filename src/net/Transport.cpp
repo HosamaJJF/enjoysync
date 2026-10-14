@@ -1,7 +1,8 @@
 #include "Transport.h"
+#include "Diagnostics.h"
 #include <algorithm>
 #include <chrono>
-#include <iostream>
+#include <optional>
 namespace enjoysync {
 static double nowMs() { return juce::Time::getMillisecondCounterHiRes(); }
 static juce::var message(const char* type) {
@@ -24,6 +25,8 @@ struct Transport::Record {
     size_t candidate = 0;
     unsigned generation = 0, attempts = 0;
     bool wanted = false;
+    bool retryLastAddress = false;
+    std::optional<Address> lastAddress;
     double nextTry = 0;
 };
 struct Transport::Session {
@@ -31,6 +34,7 @@ struct Transport::Session {
     juce::String recordId;
     int remoteSink = 0;
     bool dead = false, attached = false;
+    int writeError = 0;
     double created = nowMs(), lastReceive = created, lastHello = 0, lastPing = 0, lastMedia = 0;
     Session(UdpSocket& socket, const Address& address, const juce::String& key, bool client)
         : channel(std::make_unique<SecureChannel>(socket, address, key, client)) {}
@@ -55,6 +59,7 @@ Transport::Record* Transport::find(const juce::String& id) {
 juce::Result Transport::start() {
     if (running) return juce::Result::ok();
     auto result = socket.bind(local.port); if (result.failed()) return result;
+    logNetwork("LISTEN port=" + juce::String(local.port));
     {
         std::lock_guard lock(mutex);
         listening = "UDP " + juce::String(local.port) + u8" · "_es + (socket.hasIPv4() ? "IPv4 " : "")
@@ -129,6 +134,13 @@ void Transport::beginConnect(Record& r) {
     if (!validKey(r.view.settings.key)) { r.view.state = ConnectionState::error; r.view.detail = u8"请输入对方的 32 位连接密钥"_es; r.wanted = false; return; }
     r.view.state = ConnectionState::resolving; r.view.detail = u8"正在解析 "_es + r.view.settings.host;
     ++r.generation; r.candidates.clear(); r.candidate = 0;
+    // Established connections get one fast attempt at their known-good address.
+    // If that fails, the following attempt resolves DNS again as usual.
+    if (r.retryLastAddress && r.lastAddress) {
+        r.retryLastAddress = false; r.candidates.push_back(*r.lastAddress);
+        logNetwork("RETRY cached endpoint=" + r.lastAddress->key());
+        tryAddress(r); return;
+    }
     { std::lock_guard lock(resolverMutex); jobs.push_back({r.view.settings.recordId, r.view.settings.host, r.view.settings.port, r.generation}); }
     resolverWake.notify_one();
 }
@@ -144,6 +156,7 @@ void Transport::resolveLoop() {
 void Transport::tryAddress(Record& r) {
     if (r.candidate >= r.candidates.size()) { fail(r, u8"无法连接：检查地址、UDP 端口、防火墙和连接密钥"_es); return; }
     const auto address = r.candidates[r.candidate++];
+    logNetwork("CONNECT endpoint=" + address.key());
     // DNS can complete after an incoming dial has already reached us. Adopt that
     // pending server session instead of opening two DTLS contexts for one endpoint.
     for (auto& existing : sessions) if (!existing->dead && !existing->channel->client
@@ -162,19 +175,26 @@ void Transport::tryAddress(Record& r) {
     sessions.push_back(std::move(session));
 }
 void Transport::fail(Record& r, const juce::String& detail) {
+    const bool wasConnected = r.view.state == ConnectionState::connected;
+    if (wasConnected) r.retryLastAddress = true;
     r.session = nullptr; r.view.remoteSharing = false; r.view.detail = detail;
+    int delay = 0;
     if (r.wanted) {
         r.view.state = ConnectionState::retrying;
-        r.nextTry = nowMs() + retryDelayMs(r.attempts++) + juce::Random::getSystemRandom().nextInt(251);
+        delay = (wasConnected ? 250 : retryDelayMs(r.attempts)) + juce::Random::getSystemRandom().nextInt(251);
+        ++r.attempts; r.nextTry = nowMs() + delay;
     } else r.view.state = ConnectionState::offline;
+    logNetwork("DISCONNECT peer=" + r.view.settings.recordId + " reason=" + detail
+        + " retry_ms=" + juce::String(delay));
 }
 void Transport::control(Session& session, const juce::var& json) {
-    if (!session.channel->ready()) return;
+    if (!session.channel->ready() || session.writeError != 0) return;
     const auto serialized = juce::JSON::toString(json, true);
     const auto text = serialized.toUTF8();
     const int size = (int)text.sizeInBytes() - 1; if (size > 1050) return;
     std::array<char, 1100> data {}; data[0] = 1; std::memcpy(data.data() + 1, text.getAddress(), (size_t)size);
-    session.channel->write(data.data(), size + 1);
+    const int result = session.channel->write(data.data(), size + 1);
+    if (result <= 0 && !SecureChannel::wouldBlock(result)) session.writeError = result;
 }
 void Transport::hello(Session& session) {
     auto* r = find(session.recordId); if (!r) return;
@@ -210,8 +230,6 @@ void Transport::process(Session& s, const void* bytes, int size) {
     auto json = juce::JSON::parse(juce::String::fromUTF8(reinterpret_cast<const char*>(data + 1), size - 1));
     if (!json.isObject()) return;
     const auto type = json["type"].toString();
-    if (type == "hello" && juce::SystemStats::getEnvironmentVariable("ENJOYSYNC_TRACE", {}).isNotEmpty())
-        std::cerr << "HELLO received " << s.channel->address.key() << "\n";
     if (type == "ping") { auto pong = message("pong"); pong.getDynamicObject()->setProperty("stamp", json["stamp"]); control(s, pong); return; }
     if (type == "pong") {
         if (auto* r = find(s.recordId)) { auto rtt = nowMs() - (double)json["stamp"]; if (rtt >= 0 && rtt < 10000) r->view.rttMs = rtt; }
@@ -268,15 +286,19 @@ void Transport::process(Session& s, const void* bytes, int size) {
     if (r->session != &s && r->session && !r->session->dead && r->view.state == ConnectionState::connected) {
         // If both sides dial, prefer the connection initiated by the smaller stable ID.
         const bool preferClient = local.deviceId.compare(id) < 0;
-        if (r->session->channel->client == preferClient || s.channel->client != preferClient) {
+        if (!(r->session->channel->address == s.channel->address)
+            && (r->session->channel->client == preferClient || s.channel->client != preferClient)) {
             // Return authenticated identity even when retaining the original session, so
             // the initiator can merge its address alias instead of retrying a ghost record.
             hello(s); s.dead = true; return;
         }
+        logNetwork("REPLACE authenticated endpoint=" + s.channel->address.key());
         auto* previous = r->session; detach(*previous); previous->dead = true;
     }
     const bool first = r->session != &s || r->view.state != ConnectionState::connected;
     r->session = &s; r->view.state = ConnectionState::connected; r->attempts = 0;
+    // autoConnect controls startup; either side of a live pairing may recover it.
+    r->wanted = true; r->lastAddress = s.channel->address; r->retryLastAddress = false;
     r->view.settings.deviceId = id; r->view.settings.name = json["name"].toString().substring(0, 80);
     r->view.settings.key = key; r->view.remoteSharing = (bool)json["sharing"];
     r->view.detail = s.channel->address.key();
@@ -285,15 +307,17 @@ void Transport::process(Session& s, const void* bytes, int size) {
     s.remoteSink = sink;
     const bool shouldSend = r->view.settings.send && (bool)json["receive"];
     if (shouldSend != s.attached) { audio.setSending(s.channel->address, sink, shouldSend); s.attached = shouldSend; }
-    if (first) hello(s);
+    if (first) { logNetwork("CONNECTED endpoint=" + s.channel->address.key()); hello(s); }
 }
 AooInt32 AOO_CALL Transport::sendAudio(void* user, const AooByte* data, AooInt32 size, const void* address, AooAddrSize len, AooFlag) {
     auto& self = *static_cast<Transport*>(user); if (size > 1050 || len > sizeof(sockaddr_storage)) return -1;
     Address remote; remote.size = (socklen_t)len; std::memcpy(&remote.storage, address, len);
-    for (auto& s : self.sessions) if (!s->dead && s->channel->ready() && s->channel->address == remote) {
+    for (auto& s : self.sessions) if (!s->dead && s->writeError == 0 && s->channel->ready() && s->channel->address == remote) {
         auto* r = self.find(s->recordId); if (!r || r->session != s.get()) continue;
         std::array<unsigned char, 1100> packet {}; packet[0] = 2; std::memcpy(packet.data() + 1, data, (size_t)size);
-        int n = s->channel->write(packet.data(), size + 1); if (n > 0) ++self.mediaSent; return n > 0 ? size : -1;
+        int n = s->channel->write(packet.data(), size + 1);
+        if (n <= 0 && !SecureChannel::wouldBlock(n)) s->writeError = n;
+        if (n > 0) ++self.mediaSent; return n > 0 ? size : -1;
     }
     return -1;
 }
@@ -306,9 +330,26 @@ std::vector<PeerSnapshot> Transport::snapshot() const { std::lock_guard lock(mut
 juce::String Transport::listenerDescription() const { std::lock_guard lock(mutex); return listening; }
 bool Transport::anySending() const { return sending.load(); }
 void Transport::run() {
-    publish(); double lastPublish = 0;
+    publish(); double lastPublish = 0, lastLoop = nowMs(), lastDiagnostics = lastLoop;
+    auto sessionDiagnostics = [this](const Session& s, double now) {
+        const auto& net = socket.diagnostics();
+        return "endpoint=" + s.channel->address.key()
+            + " receive_gap_ms=" + juce::String(std::max(0.0, now - s.lastReceive), 0)
+            + " queue_drops=" + juce::String(s.channel->queueDrops)
+            + " udp_send_drops=" + juce::String(net.sendDrops)
+            + " udp_send_errors=" + juce::String(net.sendErrors)
+            + " udp_receive_errors=" + juce::String(net.receiveErrors)
+            + " native_send_error=" + juce::String(net.lastSendError)
+            + " native_receive_error=" + juce::String(net.lastReceiveError)
+            + " media_tx=" + juce::String(mediaSent.load())
+            + " media_rx=" + juce::String(mediaReceived.load())
+            + " capture_result=" + juce::String(audio.captureResult.load());
+    };
     std::array<unsigned char, 4096> packet {};
     while (running) {
+        const auto tick = nowMs();
+        if (tick - lastLoop > 250) logNetwork("NETWORK_LOOP gap_ms=" + juce::String(tick - lastLoop, 0));
+        lastLoop = tick;
         std::vector<std::function<void()>> pending;
         { std::lock_guard lock(mutex); pending.swap(commands); }
         for (auto& command : pending) command();
@@ -323,8 +364,9 @@ void Transport::run() {
         for (int count = 0; count < 256; ++count) {
             int size = socket.receive(packet.data(), (int)packet.size(), from); if (size <= 0) break;
             Session* target = nullptr;
-            const bool handshake = packet[0] == 22;
-            const bool clientHello = size >= 25 && handshake && packet[13] == 1;
+            const bool handshake = packet[0] == MBEDTLS_SSL_MSG_HANDSHAKE
+                || packet[0] == MBEDTLS_SSL_MSG_CHANGE_CIPHER_SPEC;
+            const bool clientHello = size >= 25 && packet[0] == MBEDTLS_SSL_MSG_HANDSHAKE && packet[13] == 1;
             for (auto& s : sessions) if (!s->dead && s->channel->address == from) {
                 if (!target || (handshake && !s->channel->ready())) target = s.get();
             }
@@ -345,7 +387,22 @@ void Transport::run() {
                 if (auto* r = find(simultaneousRecord)) r->session = session.get();
                 target = session.get(); sessions.push_back(std::move(session));
             }
-            if (target) target->channel->enqueue(packet.data(), size);
+            if (target) {
+                if (handshake) target->channel->enqueue(packet.data(), size);
+                else {
+                    // DTLS 1.2 application records have no visible session ID. A
+                    // restarting peer can share an endpoint with its stale session.
+                    // Let established candidates authenticate the record; Mbed TLS
+                    // discards wrong-key/replayed datagrams without refreshing
+                    // lastReceive. Keep application data out of pending handshakes:
+                    // stale media while waiting for Finished can cause a fatal MAC
+                    // error even after the local old session has been removed.
+                    // Early HELLOs are safely repeated by the authenticated peer.
+                    for (auto& s : sessions) if (!s->dead && s->channel->address == from
+                        && s->channel->ready())
+                        s->channel->enqueue(packet.data(), size);
+                }
+            }
         }
         double now = nowMs();
         for (size_t index = 0; index < sessions.size(); ++index) {
@@ -353,33 +410,50 @@ void Transport::run() {
             if (!s.channel->ready()) {
                 auto result = s.channel->handshake();
                 if ((result != 0 && !SecureChannel::wouldBlock(result)) || now - s.created > 3000) {
-                    if (juce::SystemStats::getEnvironmentVariable("ENJOYSYNC_TRACE", {}).isNotEmpty())
-                        std::cerr << "DTLS " << (s.channel->client ? "client " : "server ") << s.channel->address.key()
-                                  << " handshake: " << result << " " << s.channel->error << "\n";
+                    logNetwork("HANDSHAKE_FAILED " + sessionDiagnostics(s, nowMs())
+                        + " deadline=" + juce::String(now - s.created > 3000 ? 1 : 0)
+                        + " result=" + SecureChannel::describeError(result));
+                    auto* r = find(s.recordId);
+                    const bool retry = r && r->session == &s && r->view.state == ConnectionState::connecting;
                     detach(s); s.dead = true;
-                    if (auto* r = find(s.recordId); r && r->view.state == ConnectionState::connecting) tryAddress(*r);
+                    if (retry) tryAddress(*r);
                     continue;
                 }
                 if (s.channel->ready()) {
-                    if (juce::SystemStats::getEnvironmentVariable("ENJOYSYNC_TRACE", {}).isNotEmpty())
-                        std::cerr << "DTLS ready " << (s.channel->client ? "client " : "server ") << s.channel->address.key() << "\n";
+                    logNetwork("DTLS_READY endpoint=" + s.channel->address.key()
+                        + " role=" + (s.channel->client ? "client" : "server"));
                     if (!s.recordId.isEmpty()) hello(s);
                 }
             }
             if (!s.channel->ready()) continue;
+            if (s.writeError != 0) {
+                logNetwork("WRITE_FAILED " + sessionDiagnostics(s, now)
+                    + " result=" + SecureChannel::describeError(s.writeError));
+                if (auto* r = find(s.recordId); r && r->session == &s) {
+                    detach(s); fail(*r, u8"安全通道发送失败（"_es + juce::String(s.writeError) + u8"）"_es);
+                }
+                s.dead = true; continue;
+            }
             for (int count = 0; count < 128; ++count) {
                 int size = s.channel->read(packet.data(), (int)packet.size());
-                if (size > 0) { s.lastReceive = now; process(s, packet.data(), size); if (s.dead) break; }
+                if (size > 0) { s.lastReceive = nowMs(); process(s, packet.data(), size); if (s.dead || s.writeError != 0) break; }
                 else {
                     if (!SecureChannel::wouldBlock(size) && size != MBEDTLS_ERR_SSL_TIMEOUT) {
-                        if (auto* r = find(s.recordId); r && r->session == &s) { detach(s); fail(*r, u8"对方关闭了连接"_es); }
+                        logNetwork("READ_FAILED " + sessionDiagnostics(s, nowMs())
+                            + " result=" + SecureChannel::describeError(size));
+                        if (auto* r = find(s.recordId); r && r->session == &s) {
+                            detach(s); fail(*r, size == 0 || size == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY
+                                ? u8"对方关闭了连接"_es : u8"安全通道读取失败（"_es + juce::String(size) + u8"）"_es);
+                        }
                         s.dead = true;
                     }
                     break;
                 }
             }
             if (s.dead) continue;
+            now = nowMs();
             if (now - s.lastReceive > 5000 || (s.recordId.isEmpty() && now - s.created > 6000)) {
+                logNetwork("HEARTBEAT_TIMEOUT " + sessionDiagnostics(s, now));
                 if (auto* r = find(s.recordId); r && r->session == &s) { detach(s); fail(*r, u8"心跳超时，设备已离线"_es); }
                 s.dead = true; continue;
             }
@@ -395,6 +469,11 @@ void Transport::run() {
         for (auto& r : records) if (r->view.state == ConnectionState::connected && r->session && r->session->attached) hasSend = true;
         sending = hasSend;
         audio.pump(sendAudio, this);
+        if (now - lastDiagnostics >= 30000) {
+            for (auto& s : sessions) if (!s->dead && s->channel->ready())
+                logNetwork("HEALTH " + sessionDiagnostics(*s, now));
+            lastDiagnostics = now;
+        }
         if (now - lastPublish >= 100) { publish(); lastPublish = now; }
         std::this_thread::sleep_for(std::chrono::milliseconds(sessions.empty() ? 10 : 2));
     }

@@ -17,6 +17,9 @@ public:
         auto arguments = juce::StringArray::fromTokens(commandLine, true);
         auto index = arguments.indexOf("--profile-dir");
         if (index >= 0 && index + 1 < arguments.size()) directory = juce::File(arguments[index + 1].unquoted());
+        networkLog = std::make_unique<juce::FileLogger>(directory.getChildFile("logs/transport.log"),
+            "EnjoySync " + getApplicationVersion() + " " + juce::SystemStats::getOperatingSystemName(), 512 * 1024);
+        juce::Logger::setCurrentLogger(networkLog.get());
         controller = std::make_unique<Controller>(directory);
         appearance = std::make_unique<Appearance>();
         appearance->setMode(controller->settings.theme);
@@ -27,6 +30,7 @@ public:
     }
     void shutdown() override {
         tray.reset(); window.reset(); controller.reset();
+        juce::Logger::setCurrentLogger(nullptr); networkLog.reset();
         juce::LookAndFeel::setDefaultLookAndFeel(nullptr); appearance.reset(); aoo_terminate();
     }
     void systemRequestedQuit() override { quit(); }
@@ -114,6 +118,7 @@ private:
         juce::PopupMenu applicationMenu;
        #endif
     };
+    std::unique_ptr<juce::FileLogger> networkLog;
     std::unique_ptr<Controller> controller;
     std::unique_ptr<Appearance> appearance;
     std::unique_ptr<Window> window;

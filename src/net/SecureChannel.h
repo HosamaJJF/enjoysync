@@ -25,7 +25,9 @@ public:
     juce::String error;
     std::array<unsigned char, 32> clientRandom {};
     bool hasClientRandom = false;
+    uint64_t queueDrops = 0;
     static bool wouldBlock(int);
+    static juce::String describeError(int);
 private:
     static int send(void*, const unsigned char*, size_t);
     static int receive(void*, unsigned char*, size_t);
