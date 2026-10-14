@@ -45,6 +45,8 @@ public:
         std::this_thread::sleep_for(std::chrono::milliseconds(initialStallMs));
         // Simulate an audio device clock independently of the runner's scheduling.
         auto sampleTime = aoo_getCurrentNtpTime();
+        const int callbackWaitMs = 10 + juce::jlimit(0, 90,
+            juce::SystemStats::getEnvironmentVariable("ENJOYSYNC_TEST_CALLBACK_DELAY_MS", {}).getIntValue());
         while (running) {
             const auto callbackTime = std::chrono::steady_clock::now();
             if (callbackTime - lastCallback < std::chrono::milliseconds(5)) ++catchUpCallbacks;
@@ -61,16 +63,24 @@ public:
             history[(size_t)(cursor++ % 20)] = current; Peaks peak;
             for (const auto& frame : history) { peak.a = std::max(peak.a, frame.a); peak.b = std::max(peak.b, frame.b); }
             peakA = peak.a; peakB = peak.b;
+            ++processedBlocks;
             lock.unlock();
             if (periodicStallMs > 0 && cursor % 8 == 0)
                 std::this_thread::sleep_for(std::chrono::milliseconds(periodicStallMs));
             // A relative wait also prevents short catch-up intervals after a late wakeup.
             // Sample timestamps above still advance by exactly one audio block.
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            std::this_thread::sleep_for(std::chrono::milliseconds(callbackWaitMs));
         }
     }) {}
     ~AudioPump() { running = false; worker.join(); }
-    Peaks measure(int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); return {peakA.load(), peakB.load()}; }
+    Peaks measure(int ms) {
+        // The rolling peak and gain smoothing advance in audio blocks, so wait
+        // for simulated audio time even when the runner's callbacks are slow.
+        const auto target = processedBlocks.load() + (unsigned)((ms + 9) / 10);
+        check(waitFor([&] { return processedBlocks.load() >= target; }, std::max(4000, ms * 8)),
+              "synthetic audio callbacks stalled while measuring output");
+        return {peakA.load(), peakB.load()};
+    }
     Peaks waitForOutput(int timeoutMs = 4000) {
         waitFor([&] { return peakB.load() > 0.02f; }, timeoutMs);
         return {peakA.load(), peakB.load()};
@@ -88,10 +98,11 @@ private:
     std::atomic<bool> running {true};
     std::atomic<float> peakA {0}, peakB {0};
     std::atomic<unsigned> catchUpCallbacks {0};
+    std::atomic<uint64_t> processedBlocks {0};
     std::thread worker;
 };
 static void audioStartupTests() {
-    for (auto delays : {std::pair{1700, 0}, {0, 80}}) {
+    for (auto delays : {std::pair{1700, 0}, {0, 150}}) {
         Settings a, b; a.port = availableTestPorts(2); b.port = a.port + 1;
         AudioEngine aa, ab; aa.setCapturing(true); ab.setCapturing(true);
         Transport ta(aa, a), tb(ab, b);
@@ -106,6 +117,12 @@ static void audioStartupTests() {
                   << " received=" << tb.mediaReceived << " underruns=" << ab.underruns(0) << std::endl;
         check(peak.b > 0.02f, "Opus audio failed after a delayed synthetic callback");
         check(pump.catchUpCount() == 0, "delayed synthetic callbacks were replayed in a burst");
+        if (delays.second > 0) {
+            auto settings = tb.snapshot()[0].settings; settings.muted = true; tb.updatePeer(settings);
+            peak = pump.measure(400);
+            check(peak.b < 0.0001f && ab.level(0) > 0.02f,
+                  "delayed callbacks left a stale output peak after muting decoded audio");
+        }
     }
 }
 static void settingsTests() {
