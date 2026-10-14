@@ -14,7 +14,7 @@ public:
     juce::Result addPeer(PeerSettings);
     juce::Result applyPreferences(const juce::String& name, int port, int latency, bool pcm,
                                   bool hideDock, const juce::String& output);
-    juce::String status() const;
+    juce::String error() const { return problem; }
     void setSharingEnabled(bool);
     bool sharingEnabled() const { return allowSharing; }
     bool capturing() const { return capture->running(); }

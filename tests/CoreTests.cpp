@@ -60,6 +60,24 @@ static void settingsTests() {
     check(validKey("0123456789abcdef0123456789abcdef"), "valid pairing key rejected");
     check(!validKey("password"), "weak/invalid pairing key accepted");
     check(normalizeHost(" [FE80::1%en0] ") == "fe80::1%en0", "IPv6 scope parsing");
+    struct EndpointCase { const char* input; int port; const char* host; int expectedPort; };
+    for (const auto& item : std::initializer_list<EndpointCase> {
+        {"192.168.101.108:51000", 51000, "192.168.101.108", 51000},
+        {" 192.168.101.106:52000 ", 51000, "192.168.101.106", 52000},
+        {"Studio.EXAMPLE.:52001", 51000, "studio.example", 52001},
+        {"[FE80::1%en0]:52002", 51000, "fe80::1%en0", 52002},
+        {"[::1]", 51000, "::1", 51000},
+        {"2001:db8::20", 51000, "2001:db8::20", 51000},
+        {"2001:db8::5100", 51000, "2001:db8::5100", 51000}}) {
+        juce::String host = item.input; int port = item.port;
+        check(normalizeEndpoint(host, port).wasOk() && host == item.host && port == item.expectedPort,
+              "endpoint input was not split/canonicalized correctly");
+    }
+    for (auto input : {"", ":51000", "host:", "host:0", "host:65536", "host:abc", "host:999999999999",
+                       "[::1", "[::1]extra", "[::1]:", "[::1]:-1", "[host]:51000", "https://host", "host name"}) {
+        juce::String host = input; int port = 51000;
+        check(normalizeEndpoint(host, port).failed(), "malformed endpoint accepted");
+    }
     PeerSettings a, b; a.host = "Studio.EXAMPLE."; b.host = "studio.example";
     check(sameEndpoint(a, b), "DNS aliases differing in case/trailing dot not normalized");
     ++b.port; check(!sameEndpoint(a, b), "different ports incorrectly merged");
@@ -67,6 +85,20 @@ static void settingsTests() {
     auto restored = Settings::fromJson(s.toJson());
     check(restored.peers.size() == 1, "duplicate saved records not merged");
     check(restored.deviceId == s.deviceId && restored.key == s.key, "identity not persisted");
+    check(restored.theme == "system", "older settings should follow system appearance");
+    for (auto mode : {"light", "dark", "system"}) {
+        s.theme = mode; check(Settings::fromJson(s.toJson()).theme == mode, "appearance preference not persisted");
+    }
+    auto invalidTheme = s.toJson(); invalidTheme.getDynamicObject()->setProperty("theme", "unknown");
+    check(Settings::fromJson(invalidTheme).theme == "system", "unknown appearance should fall back to system");
+    invalidTheme.getDynamicObject()->removeProperty("theme");
+    check(Settings::fromJson(invalidTheme).theme == "system", "missing appearance should follow system");
+    PeerSettings pasted, separate; pasted.host = "192.168.101.108:52000"; pasted.key = s.key;
+    separate = pasted; separate.host = "192.168.101.108"; separate.port = 52000;
+    check(sameEndpoint(pasted, separate), "pasted endpoint not deduplicated against separate fields");
+    s.peers = {pasted, separate}; restored = Settings::fromJson(s.toJson());
+    check(restored.peers.size() == 1 && restored.peers[0].host == separate.host && restored.peers[0].port == 52000,
+          "legacy pasted endpoint was not repaired on load");
     auto file = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("enjoysync-settings", ".json");
     check(s.save(file).wasOk(), "atomic settings save failed");
     check(Settings::load(file).deviceId == s.deviceId, "settings reload failed"); file.deleteFile();
@@ -104,7 +136,10 @@ static void transportTests() {
     Transport ta(aa, a), tb(ab, b), tc(ac, c);
     check(ta.start().wasOk() && tb.start().wasOk() && tc.start().wasOk(), "test listeners unavailable");
     AudioPump pump(aa, ab);
-    auto peer = peerFor(b); ta.addOrConnect(peer); ta.addOrConnect(peer);
+    // Reproduce the screenshots through the same parser used by the connection form.
+    auto peer = peerFor(b); peer.host += ":" + juce::String(b.port); peer.port = 51000;
+    check(normalizeEndpoint(peer.host, peer.port).wasOk(), "pasted IPv4 endpoint rejected");
+    ta.addOrConnect(peer); ta.addOrConnect(peer);
     auto paired = waitFor([&] { return connected(ta) && connected(tb); });
     if (!paired) for (auto* t : {&ta, &tb}) for (auto& p : t->snapshot())
         std::cerr << stateName(p.state) << ": " << p.detail << "\n";
@@ -155,7 +190,9 @@ static void transportTests() {
     check(waitFor([&] { return ta.snapshot()[0].state == ConnectionState::offline; }), "manual disconnect failed");
     std::this_thread::sleep_for(std::chrono::milliseconds(1600));
     check(ta.snapshot()[0].state == ConnectionState::offline, "manual disconnect unexpectedly reconnected");
-    ta.addOrConnect(peerFor(b, "::1"));
+    auto ipv6Peer = peerFor(b, "[::1]:" + juce::String(b.port)); ipv6Peer.port = 51000;
+    check(normalizeEndpoint(ipv6Peer.host, ipv6Peer.port).wasOk(), "pasted bracketed IPv6 endpoint rejected");
+    ta.addOrConnect(ipv6Peer);
     check(waitFor([&] { return connected(ta) && connected(tb) && ta.snapshot()[0].detail.contains("::1"); }, 5000), "IPv6 pairing failed");
     peak = pump.measure(1000); check(peak.b > 0.02f, "encrypted IPv6 PCM audio failed");
     ab.setCapturing(false); tb.stop(); check(waitFor([&] { return !connected(ta); }, 1500), "graceful BYE not detected promptly");

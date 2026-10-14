@@ -23,6 +23,7 @@ struct Settings {
     int port = 51000, bufferMs = 30;
     bool hideDock = true, pcm = false;
     juce::String outputDevice;
+    juce::String theme {"system"};
     std::vector<PeerSettings> peers;
     juce::var toJson() const;
     static Settings fromJson(const juce::var&);
@@ -31,6 +32,8 @@ struct Settings {
 };
 bool validKey(const juce::String&);
 juce::String normalizeHost(juce::String);
+// Accept host, host:port, IPv6, and [IPv6]:port. An embedded port takes precedence.
+juce::Result normalizeEndpoint(juce::String& host, int& port);
 bool sameEndpoint(const PeerSettings&, const PeerSettings&);
 int retryDelayMs(unsigned attempt);
 }

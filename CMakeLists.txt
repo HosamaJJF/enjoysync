@@ -64,7 +64,8 @@ juce_add_gui_app(EnjoySync PRODUCT_NAME "EnjoySync" COMPANY_NAME "EnjoySync"
     ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/assets/icon.png"
     BUNDLE_ID "app.enjoysync.desktop" VERSION ${PROJECT_VERSION}
     PLIST_TO_MERGE "<plist><dict><key>NSAudioCaptureUsageDescription</key><string>EnjoySync captures system audio to share it with devices you connect to.</string><key>NSLocalNetworkUsageDescription</key><string>EnjoySync connects directly to your audio devices on the local network.</string><key>NSHighResolutionCapable</key><true/></dict></plist>")
-target_sources(EnjoySync PRIVATE src/app/Main.cpp src/app/Controller.cpp src/app/MainView.cpp)
+target_sources(EnjoySync PRIVATE src/app/Main.cpp src/app/Controller.cpp src/app/MainView.cpp
+    src/app/Appearance.cpp src/app/SettingsView.cpp)
 target_link_libraries(EnjoySync PRIVATE enjoysync_core juce::juce_gui_extra)
 include(cmake/Notices.cmake)
 if(APPLE)
@@ -77,7 +78,7 @@ if(APPLE)
 elseif(WIN32)
     target_sources(EnjoySync PRIVATE src/platform/CaptureWindows.cpp src/platform/DesktopWindows.cpp)
     target_compile_definitions(EnjoySync PRIVATE _WIN32_WINNT=0x0A00 WINVER=0x0A00)
-    target_link_libraries(EnjoySync PRIVATE ole32 avrt mmdevapi mfplat mfuuid)
+    target_link_libraries(EnjoySync PRIVATE ole32 avrt mmdevapi mfplat mfuuid dwmapi)
 else()
     message(FATAL_ERROR "EnjoySync desktop currently supports macOS and Windows only")
 endif()

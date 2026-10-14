@@ -1,175 +1,201 @@
 #include "MainView.h"
+#include "SettingsView.h"
+
 namespace enjoysync {
-static const juce::Colour background {0xff10171e}, panel {0xff19232d}, ink {0xffe7f0f5}, mutedInk {0xff94a7b6}, mint {0xff71e7bd};
-static juce::Font font(float size, bool bold = false) {
-   #if JUCE_MAC
-    return juce::Font(juce::FontOptions("PingFang SC", size, bold ? juce::Font::bold : juce::Font::plain));
-   #else
-    return juce::Font(juce::FontOptions("Microsoft YaHei UI", size, bold ? juce::Font::bold : juce::Font::plain));
-   #endif
-}
-static void label(juce::Label& item, const juce::String& text, float size = 13, juce::Colour colour = mutedInk) {
-    item.setText(text, juce::dontSendNotification); item.setFont(font(size)); item.setColour(juce::Label::textColourId, colour);
-}
 class PeerRow final : public juce::Component {
 public:
-    PeerRow(Controller& c, PeerSnapshot s) : controller(c), snapshot(std::move(s)) {
-        for (auto* component : std::initializer_list<juce::Component*> {&name, &state, &details, &receive, &play, &send, &automatic, &volume, &action, &remove}) addAndMakeVisible(component);
-        receive.setButtonText(u8"接收"_es); play.setButtonText(u8"播放"_es); send.setButtonText(u8"共享"_es); automatic.setButtonText(u8"自动连接"_es);
+    PeerRow(Controller& c, Appearance& a, PeerSnapshot s)
+        : controller(c), appearance(a), snapshot(std::move(s)),
+          receive(a, Icon::receive, u8"接收"_es, true), play(a, Icon::speaker, u8"播放"_es, true),
+          send(a, Icon::share, u8"共享"_es, true), automatic(a, Icon::automatic, u8"自动连接"_es, true),
+          action(a, Icon::reconnect, u8"重连"_es), remove(a, Icon::remove, u8"移除"_es, false, true) {
+        for (auto* component : std::initializer_list<juce::Component*> {
+            &name, &state, &details, &receive, &play, &send, &automatic, &volume, &percentage, &action, &remove}) addAndMakeVisible(component);
         volume.setSliderStyle(juce::Slider::LinearHorizontal); volume.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
-        volume.setRange(0, 1.5, 0.01); volume.setTooltip(u8"此设备在本机的播放音量"_es);
+        volume.setRange(0, 2, 0.01); volume.setTitle(u8"播放音量"_es); volume.setTooltip(u8"播放音量"_es);
+        volume.setDoubleClickReturnValue(true, 0.8); volume.setScrollWheelEnabled(false);
         receive.onClick = [this] { snapshot.settings.receive = receive.getToggleState(); update(); };
-        play.onClick = [this] { snapshot.settings.muted = !play.getToggleState(); update(); };
+        play.onClick = [this] {
+            snapshot.settings.muted = !play.getToggleState();
+            play.setIcon(snapshot.settings.muted ? Icon::muted : Icon::speaker, u8"播放"_es); update();
+        };
         send.onClick = [this] { snapshot.settings.send = send.getToggleState(); update(); };
         automatic.onClick = [this] { snapshot.settings.autoConnect = automatic.getToggleState(); update(); };
-        volume.onValueChange = [this] { snapshot.settings.gain = (float)volume.getValue(); update(); };
+        volume.onDragStart = [this] { adjustingVolume = true; };
+        volume.onDragEnd = [this] { adjustingVolume = false; };
+        volume.onValueChange = [this] { snapshot.settings.gain = (float)volume.getValue(); refreshPercentage(); update(); };
         action.onClick = [this] {
-            if (snapshot.state == ConnectionState::connected || snapshot.state == ConnectionState::connecting || snapshot.state == ConnectionState::resolving)
-                controller.transport->disconnect(snapshot.settings.recordId);
+            if (isConnecting()) controller.transport->disconnect(snapshot.settings.recordId);
             else controller.transport->connect(snapshot.settings.recordId);
         };
-        remove.setButtonText(u8"移除"_es); remove.onClick = [this] { controller.transport->remove(snapshot.settings.recordId); };
+        remove.onClick = [this] { controller.transport->remove(snapshot.settings.recordId); };
+        percentage.setJustificationType(juce::Justification::centredRight);
         refresh(snapshot);
     }
-    void update() { controller.transport->updatePeer(snapshot.settings); }
-    void refresh(const PeerSnapshot& s) {
-        snapshot = s;
-        label(name, s.settings.name.isNotEmpty() ? s.settings.name : s.settings.host, 16, ink);
-        label(state, stateName(s.state), 12, s.state == ConnectionState::connected ? mint : mutedInk);
-        juce::String text = s.detail;
-        if (s.state == ConnectionState::connected) {
-            text += u8" · RTT "_es + juce::String(s.rttMs, 0) + " ms";
-            text += u8" · 缓冲 "_es + juce::String(controller.audio.latencyMs(s.slot)) + " ms";
-            text += s.remoteSharing ? u8" · 对方正在共享"_es : u8" · 对方未共享"_es;
-        }
-        label(details, text, 11); details.setTooltip(text);
-        receive.setToggleState(s.settings.receive, juce::dontSendNotification);
-        play.setToggleState(!s.settings.muted, juce::dontSendNotification);
-        send.setToggleState(s.settings.send, juce::dontSendNotification);
-        automatic.setToggleState(s.settings.autoConnect, juce::dontSendNotification);
-        if (!volume.isMouseButtonDown()) volume.setValue(s.settings.gain, juce::dontSendNotification);
-        bool online = s.state == ConnectionState::connected || s.state == ConnectionState::connecting || s.state == ConnectionState::resolving;
-        action.setButtonText(online ? u8"断开"_es : u8"重试"_es); repaint();
+    void refresh(const PeerSnapshot& value) {
+        snapshot = value;
+        setLabel(name, value.settings.name.isNotEmpty() ? value.settings.name : value.settings.host, 15, true);
+        name.setTooltip(name.getText());
+        setLabel(state, stateName(value.state), 12);
+        const auto& p = appearance.colours();
+        state.setColour(juce::Label::textColourId, value.state == ConnectionState::connected ? p.accent
+            : value.state == ConnectionState::error ? p.danger : p.secondary);
+        auto address = value.settings.host.containsChar(':') ? "[" + value.settings.host + "]" : value.settings.host;
+        juce::String text = address + ":" + juce::String(value.settings.port);
+        if (value.state == ConnectionState::connected) {
+            text += u8"   ·   RTT "_es + juce::String(value.rttMs, 1) + " ms";
+            if (value.slot >= 0 && value.slot < maxPeers)
+                text += u8"   ·   缓冲 "_es + juce::String(controller.audio.latencyMs(value.slot)) + " ms";
+        } else if (value.state == ConnectionState::error || value.state == ConnectionState::retrying) text += u8"   ·   "_es + value.detail;
+        setLabel(details, text, 12); details.setColour(juce::Label::textColourId, p.secondary); details.setTooltip(text);
+        receive.setToggleState(value.settings.receive, juce::dontSendNotification);
+        play.setToggleState(!value.settings.muted, juce::dontSendNotification);
+        play.setIcon(value.settings.muted ? Icon::muted : Icon::speaker, u8"播放"_es);
+        send.setToggleState(value.settings.send, juce::dontSendNotification);
+        automatic.setToggleState(value.settings.autoConnect, juce::dontSendNotification);
+        if (!adjustingVolume) volume.setValue(value.settings.gain, juce::dontSendNotification);
+        refreshPercentage();
+        action.setIcon(isConnecting() ? Icon::disconnect : Icon::reconnect, isConnecting() ? u8"断开"_es : u8"重连"_es);
+        repaint();
     }
+    void lookAndFeelChanged() override { refresh(snapshot); }
     juce::String id() const { return snapshot.settings.recordId; }
     void paint(juce::Graphics& g) override {
-        g.setColour(panel); g.fillRoundedRectangle(getLocalBounds().toFloat().reduced(0, 4), 10);
-        auto meter = juce::jlimit(0.0f, 1.0f, controller.audio.level(snapshot.slot));
-        g.setColour(mint.withAlpha(0.75f)); g.fillRoundedRectangle(14, 73, meter * 270, 3, 1.5f);
+        const auto& p = appearance.colours(); drawPanel(g, getLocalBounds(), p);
+        g.setColour(p.field); g.fillRoundedRectangle(20, 20, 38, 38, 10);
+        drawIcon(g, Icon::device, {28, 28, 22, 22}, p.secondary);
+        g.setColour(state.findColour(juce::Label::textColourId)); g.fillEllipse(72, 51, 6, 6);
+        g.setColour(p.outline); g.drawVerticalLine(getWidth() - 98, 23, 49);
+        const auto meter = snapshot.state == ConnectionState::connected && snapshot.slot >= 0 && snapshot.slot < maxPeers
+            ? juce::jlimit(0.0f, 1.0f, controller.audio.level(snapshot.slot)) : 0.0f;
+        g.setColour(p.outline.withAlpha(0.45f)); g.fillRoundedRectangle(20, 99, (float)getWidth() - 40, 2, 1);
+        if (meter > 0) { g.setColour(p.accent); g.fillRoundedRectangle(20, 99, meter * ((float)getWidth() - 40), 2, 1); }
     }
     void resized() override {
-        int width = getWidth(); name.setBounds(14, 12, 216, 26); state.setBounds(230, 15, 92, 20);
-        details.setBounds(14, 43, width - 28, 22);
-        int x = std::max(335, width - 610);
-        receive.setBounds(x, 12, 64, 28); play.setBounds(x + 64, 12, 64, 28); send.setBounds(x + 128, 12, 64, 28);
-        automatic.setBounds(x + 194, 12, 100, 28); volume.setBounds(x + 299, 13, 108, 26);
-        action.setBounds(width - 158, 12, 68, 28); remove.setBounds(width - 82, 12, 68, 28);
+        const int w = getWidth(), controls = w - 420;
+        name.setBounds(72, 21, controls - 88, 22); state.setBounds(86, 45, controls - 102, 18);
+        details.setBounds(72, 73, w - 92, 18);
+        receive.setBounds(controls, 20, 34, 34); play.setBounds(controls + 40, 20, 34, 34);
+        send.setBounds(controls + 80, 20, 34, 34); automatic.setBounds(controls + 120, 20, 34, 34);
+        volume.setBounds(controls + 166, 23, 100, 28); percentage.setBounds(controls + 272, 24, 44, 24);
+        action.setBounds(w - 88, 20, 34, 34); remove.setBounds(w - 48, 20, 34, 34);
     }
 private:
+    bool isConnecting() const {
+        return snapshot.state == ConnectionState::connected || snapshot.state == ConnectionState::connecting
+            || snapshot.state == ConnectionState::resolving || snapshot.state == ConnectionState::retrying;
+    }
+    void update() { controller.transport->updatePeer(snapshot.settings); }
+    void refreshPercentage() {
+        setLabel(percentage, juce::String(juce::roundToInt(volume.getValue() * 100)) + "%", 12);
+        percentage.setColour(juce::Label::textColourId, appearance.colours().secondary);
+    }
     Controller& controller;
+    Appearance& appearance;
     PeerSnapshot snapshot;
-    juce::Label name, state, details;
-    juce::ToggleButton receive, play, send, automatic;
+    juce::Label name, state, details, percentage;
+    IconButton receive, play, send, automatic;
     juce::Slider volume;
-    juce::TextButton action, remove;
+    IconButton action, remove;
+    bool adjustingVolume = false;
 };
-MainView::MainView(Controller& c) : controller(c) {
-    auto& look = getLookAndFeel();
-    look.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff2a3b48));
-    look.setColour(juce::TextButton::textColourOffId, ink);
-    look.setColour(juce::ToggleButton::textColourId, ink); look.setColour(juce::ToggleButton::tickColourId, mint);
-    look.setColour(juce::Slider::thumbColourId, mint); look.setColour(juce::Slider::trackColourId, mint);
-    look.setColour(juce::ComboBox::backgroundColourId, panel); look.setColour(juce::ComboBox::textColourId, ink);
-    for (auto* component : std::initializer_list<juce::Component*> {&title, &subtitle, &localCaption, &keyCaption, &listener, &statusLabel,
-        &peerCaption, &feedback, &nameCaption, &portCaption, &bufferCaption, &outputCaption,
-        &name, &port, &buffer, &host, &remotePort, &remoteKey, &localKey, &codec, &output, &hideDock,
-        &automatic, &apply, &connectButton, &copyKey, &share, &mute, &viewport}) addAndMakeVisible(component);
-    label(title, "EnjoySync", 30, ink); title.setFont(font(30, true));
-    label(subtitle, u8"让系统声音，抵达另一台设备。"_es, 13);
-    label(localCaption, u8"本机设备"_es, 16, ink); label(keyCaption, u8"本机连接密钥 · 将密钥交给要连接你的设备"_es, 12);
-    label(nameCaption, u8"设备名称"_es); label(portCaption, u8"UDP 监听端口"_es); label(bufferCaption, u8"最低缓冲 / ms"_es); label(outputCaption, u8"播放输出设备"_es);
-    field(name, controller.settings.name, u8"设备名称"_es); field(port, juce::String(controller.settings.port), "51000", true);
-    field(buffer, juce::String(controller.settings.bufferMs), "30", true);
-    field(host, {}, u8"对方 IP / 域名（IPv6 可直接填写）"_es); field(remotePort, "51000", u8"端口"_es, true);
-    field(remoteKey, {}, u8"对方的 32 位连接密钥"_es); field(localKey, controller.settings.key, {}); localKey.setReadOnly(true);
-    remoteKey.setPasswordCharacter(0x2022); localKey.setPasswordCharacter(0x2022);
-    localKey.setTooltip(u8"持有此密钥的设备可以与你配对；音频共享仍由每台设备自行开启"_es);
-    codec.addItem(u8"Opus · 192 kbps"_es, 1); codec.addItem(u8"PCM · 24-bit"_es, 2); codec.setSelectedId(controller.settings.pcm ? 2 : 1);
-    output.addItem(u8"系统默认输出"_es, 1);
-    auto names = controller.audio.outputDevices(); int id = 2;
-    for (const auto& device : names) { output.addItem(device, id); if (device == controller.settings.outputDevice) output.setSelectedId(id); ++id; }
-    if (output.getSelectedId() == 0) output.setSelectedId(1);
-    hideDock.setToggleState(controller.settings.hideDock, juce::dontSendNotification);
-   #if !JUCE_MAC
-    hideDock.setVisible(false);
-   #endif
-    share.setToggleState(true, juce::dontSendNotification); share.onClick = [this] { controller.setSharingEnabled(share.getToggleState()); };
-    mute.onClick = [this] { controller.audio.muteAll = mute.getToggleState(); };
-    copyKey.onClick = [this] { juce::SystemClipboard::copyTextToClipboard(controller.settings.key); label(feedback, u8"本机连接密钥已复制"_es, 12, mint); };
-    apply.onClick = [this] {
-        report(controller.applyPreferences(name.getText(), port.getText().getIntValue(), buffer.getText().getIntValue(),
-            codec.getSelectedId() == 2, hideDock.getToggleState(), output.getSelectedId() == 1 ? juce::String() : output.getText()));
-        port.setText(juce::String(controller.settings.port), false);
+
+MainView::MainView(Controller& c, Appearance& a)
+    : controller(c), appearance(a), share(a, Icon::share, u8"共享系统声音"_es, true),
+      mute(a, Icon::speaker, u8"全部播放静音"_es, true), settingsButton(a, Icon::settings, u8"设置"_es) {
+    for (auto* component : std::initializer_list<juce::Component*> {
+        &localCaption, &localName, &connectCaption, &hostCaption, &portCaption, &keyCaption, &peerCaption, &feedback,
+        &host, &remotePort, &remoteKey, &automatic, &connectButton, &share, &mute, &settingsButton, &viewport}) addAndMakeVisible(component);
+    setLabel(localCaption, u8"本机设备"_es, 11); setLabel(connectCaption, u8"添加设备"_es, 14, true);
+    setLabel(hostCaption, u8"IP / 域名"_es, 11); setLabel(portCaption, u8"端口"_es, 11);
+    setLabel(keyCaption, u8"连接密钥"_es, 11);
+    setupEditor(host, {}, u8"IP / 域名"_es); setupEditor(remotePort, "51000", u8"端口"_es, true);
+    setupEditor(remoteKey, {}, u8"连接密钥"_es); remoteKey.setPasswordCharacter(0x2022);
+    host.setTooltip(u8"IP:端口 / 域名:端口 / [IPv6]:端口"_es);
+    share.onClick = [this] { controller.setSharingEnabled(share.getToggleState()); };
+    mute.onClick = [this] {
+        controller.audio.muteAll = mute.getToggleState();
+        mute.setIcon(mute.getToggleState() ? Icon::muted : Icon::speaker, u8"全部播放静音"_es);
     };
-    connectButton.setColour(juce::TextButton::buttonColourId, mint); connectButton.setColour(juce::TextButton::textColourOffId, background);
+    settingsButton.onClick = [this] { showSettings(); };
     connectButton.onClick = [this] {
         PeerSettings peer; peer.host = host.getText(); peer.port = remotePort.getText().getIntValue(); peer.key = remoteKey.getText();
-        peer.autoConnect = automatic.getToggleState(); report(controller.addPeer(peer));
+        peer.autoConnect = automatic.getToggleState();
+        const auto endpoint = normalizeEndpoint(peer.host, peer.port);
+        if (endpoint.failed()) { report(endpoint); return; }
+        const auto result = controller.addPeer(peer); report(result);
+        if (result.wasOk()) { host.setText(peer.host, false); remotePort.setText(juce::String(peer.port), false); }
     };
-    viewport.setViewedComponent(&rowsContainer, false); viewport.setScrollBarsShown(true, false);
-    controller.changed = [this] { if (isShowing()) refresh(); };
-    refresh(); setSize(1080, 760);
+    host.onReturnKey = remotePort.onReturnKey = remoteKey.onReturnKey = [this] { connectButton.triggerClick(); };
+    viewport.setViewedComponent(&rowsContainer, false); viewport.setScrollBarsShown(true, false); viewport.setScrollBarThickness(8);
+    controller.changed = [this] { refresh(); };
+    lookAndFeelChanged(); refresh(); setSize(940, 620);
 }
-MainView::~MainView() { controller.changed = {}; viewport.setViewedComponent(nullptr, false); }
-void MainView::field(juce::TextEditor& editor, const juce::String& value, const juce::String& placeholder, bool numeric) {
-    editor.setFont(font(13)); editor.setColour(juce::TextEditor::backgroundColourId, background);
-    editor.setColour(juce::TextEditor::textColourId, ink); editor.setColour(juce::TextEditor::outlineColourId, juce::Colour(0xff344552));
-    editor.setColour(juce::TextEditor::focusedOutlineColourId, mint); editor.setText(value);
-    editor.setTextToShowWhenEmpty(placeholder, mutedInk); editor.setIndents(9, 8);
-    if (numeric) editor.setInputRestrictions(5, "0123456789");
+MainView::~MainView() { controller.changed = {}; settingsWindow.reset(); viewport.setViewedComponent(nullptr, false); }
+void MainView::showSettings() {
+    if (!settingsWindow) settingsWindow = std::make_unique<SettingsWindow>(controller, appearance);
+    settingsWindow->setVisible(true); settingsWindow->setMinimised(false); settingsWindow->toFront(true);
 }
-void MainView::report(const juce::Result& result) { label(feedback, result.wasOk() ? u8"已应用"_es : result.getErrorMessage(), 12, result.wasOk() ? mint : juce::Colour(0xffffa192)); }
+void MainView::hideSettings() { if (settingsWindow) settingsWindow->setVisible(false); }
+bool MainView::keyPressed(const juce::KeyPress& key) {
+    if (key.getKeyCode() == ',' && key.getModifiers().isCommandDown()) { showSettings(); return true; }
+    return false;
+}
+void MainView::lookAndFeelChanged() {
+    const auto& p = appearance.colours();
+    for (auto* item : {&localCaption, &hostCaption, &portCaption, &keyCaption}) item->setColour(juce::Label::textColourId, p.secondary);
+    styleEditor(host, p, u8"IP / 域名"_es); styleEditor(remotePort, p, "51000"); styleEditor(remoteKey, p, u8"32 位连接密钥"_es);
+    feedback.setColour(juce::Label::textColourId, failed ? p.danger : p.accent); repaint();
+}
+void MainView::report(const juce::Result& result) {
+    failed = result.failed(); setLabel(feedback, failed ? result.getErrorMessage() : juce::String(), 12);
+    feedback.setColour(juce::Label::textColourId, failed ? appearance.colours().danger : appearance.colours().accent);
+    feedback.setTooltip(feedback.getText());
+}
 void MainView::refresh() {
-    auto snapshots = controller.peers();
+    const auto snapshots = controller.peers();
     bool rebuild = rows.size() != snapshots.size();
     if (!rebuild) for (size_t i = 0; i < rows.size(); ++i) if (rows[i]->id() != snapshots[i].settings.recordId) rebuild = true;
     if (rebuild) {
         rows.clear();
-        for (auto& snapshot : snapshots) { auto row = std::make_unique<PeerRow>(controller, snapshot); rowsContainer.addAndMakeVisible(*row); rows.push_back(std::move(row)); }
+        for (const auto& snapshot : snapshots) {
+            auto row = std::make_unique<PeerRow>(controller, appearance, snapshot);
+            rowsContainer.addAndMakeVisible(*row); rows.push_back(std::move(row));
+        }
         resized();
     } else for (size_t i = 0; i < rows.size(); ++i) rows[i]->refresh(snapshots[i]);
-    label(listener, controller.transport->listenerDescription(), 12, mint);
-    label(statusLabel, controller.status(), 12, controller.capturing() ? mint : mutedInk); statusLabel.setTooltip(controller.status());
-    label(peerCaption, u8"设备  /  "_es + juce::String((int)snapshots.size()) + u8"    接收与共享可独立选择"_es, 16, ink);
+    setLabel(localName, controller.settings.name, 18, true); localName.setTooltip(controller.settings.name);
+    setLabel(peerCaption, u8"设备  ·  "_es + juce::String((int)snapshots.size()), 14, true);
     share.setToggleState(controller.sharingEnabled(), juce::dontSendNotification);
     mute.setToggleState(controller.audio.muteAll, juce::dontSendNotification);
+    mute.setIcon(mute.getToggleState() ? Icon::muted : Icon::speaker, u8"全部播放静音"_es);
+    if (controller.error().isNotEmpty()) report(juce::Result::fail(controller.error()));
     repaint();
 }
 void MainView::paint(juce::Graphics& g) {
-    g.fillAll(background); g.setColour(panel);
-    g.fillRoundedRectangle(24, 108, (float)getWidth() - 48, 250, 14);
-    g.fillRoundedRectangle(24, 374, (float)getWidth() - 48, 112, 14);
+    const auto& p = appearance.colours(); g.fillAll(p.background);
+    g.setColour(p.accentSurface); g.fillRoundedRectangle(28, 24, 40, 40, 11);
+    drawIcon(g, Icon::device, {37, 33, 22, 22}, p.accent);
+    drawPanel(g, {24, 90, getWidth() - 48, 164}, p);
     if (rows.empty()) {
-        g.setColour(mutedInk); g.setFont(font(15));
-        g.drawFittedText(u8"还没有设备。填写对方地址和连接密钥，开始共享声音。"_es, 40, 555, getWidth() - 80, 60, juce::Justification::centred, 2);
+        const int centre = 302 + (getHeight() - 326) / 2;
+        drawIcon(g, Icon::device, {(float)getWidth() / 2 - 16, (float)centre - 38, 32, 32}, p.secondary.withAlpha(0.5f));
+        g.setColour(p.secondary); g.setFont(uiFont(13));
+        g.drawText(u8"暂无设备"_es, 24, centre + 6, getWidth() - 48, 24, juce::Justification::centred);
     }
 }
 void MainView::resized() {
-    int w = getWidth(); title.setBounds(24, 24, 260, 42); subtitle.setBounds(26, 70, 450, 22);
-    listener.setBounds(w - 420, 39, 390, 28); listener.setJustificationType(juce::Justification::centredRight);
-    localCaption.setBounds(40, 120, 150, 26); share.setBounds(w - 400, 120, 195, 26); mute.setBounds(w - 200, 120, 160, 26);
-    nameCaption.setBounds(40, 158, 220, 20); portCaption.setBounds(282, 158, 145, 20); bufferCaption.setBounds(446, 158, 142, 20);
-    outputCaption.setBounds(608, 158, w - 650, 20);
-    name.setBounds(40, 184, 222, 36); port.setBounds(282, 184, 144, 36); buffer.setBounds(446, 184, 142, 36);
-    output.setBounds(608, 184, w - 648, 36);
-    keyCaption.setBounds(40, 232, 500, 20); localKey.setBounds(40, 258, 348, 34); copyKey.setBounds(400, 258, 94, 34);
-    codec.setBounds(514, 258, 172, 34); hideDock.setBounds(704, 260, 160, 30); apply.setBounds(w - 156, 258, 116, 34);
-    statusLabel.setBounds(40, 310, w - 80, 28);
-    host.setBounds(40, 390, 300, 36); remotePort.setBounds(350, 390, 90, 36);
-    remoteKey.setBounds(452, 390, w - 646, 36); connectButton.setBounds(w - 180, 390, 140, 36);
-    automatic.setBounds(40, 441, 190, 26); feedback.setBounds(240, 441, w - 280, 26);
-    peerCaption.setBounds(28, 503, w - 56, 30); viewport.setBounds(24, 541, w - 48, getHeight() - 565);
-    rowsContainer.setSize(viewport.getWidth() - 14, std::max(viewport.getHeight(), (int)rows.size() * 90));
-    for (size_t i = 0; i < rows.size(); ++i) rows[i]->setBounds(0, (int)i * 90, rowsContainer.getWidth(), 86);
+    const int w = getWidth(); localCaption.setBounds(82, 23, w - 280, 16); localName.setBounds(82, 41, w - 280, 27);
+    share.setBounds(w - 156, 26, 36, 36); mute.setBounds(w - 112, 26, 36, 36); settingsButton.setBounds(w - 64, 26, 36, 36);
+    connectCaption.setBounds(44, 105, w - 88, 24);
+    const int hostWidth = (w - 320) * 45 / 100, keyX = 44 + hostWidth + 100;
+    hostCaption.setBounds(44, 143, hostWidth, 16); host.setBounds(44, 165, hostWidth, 38);
+    portCaption.setBounds(56 + hostWidth, 143, 76, 16); remotePort.setBounds(56 + hostWidth, 165, 76, 38);
+    keyCaption.setBounds(keyX, 143, w - keyX - 182, 16); remoteKey.setBounds(keyX, 165, w - keyX - 182, 38);
+    connectButton.setBounds(w - 170, 165, 126, 38); automatic.setBounds(40, 214, 190, 26);
+    feedback.setBounds(242, 214, w - 286, 26);
+    peerCaption.setBounds(28, 273, w - 56, 22); viewport.setBounds(24, 312, w - 48, getHeight() - 336);
+    rowsContainer.setSize(viewport.getWidth() - 12, std::max(viewport.getHeight(), (int)rows.size() * 124));
+    for (size_t i = 0; i < rows.size(); ++i) rows[i]->setBounds(0, (int)i * 124, rowsContainer.getWidth(), 112);
 }
 }

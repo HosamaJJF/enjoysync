@@ -12,6 +12,7 @@ public:
 };
 std::unique_ptr<SystemCapture> createSystemCapture();
 void setDockVisible(bool);
+void setApplicationTheme(const juce::String& mode);
 void beginAudioActivity();
 void endAudioActivity();
 }

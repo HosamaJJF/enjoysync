@@ -15,9 +15,8 @@ Controller::~Controller() {
 }
 std::vector<PeerSnapshot> Controller::peers() const { return transport->snapshot(); }
 juce::Result Controller::addPeer(PeerSettings peer) {
-    peer.host = normalizeHost(peer.host); peer.key = peer.key.trim().toLowerCase();
-    if (peer.host.isEmpty() || peer.host.containsAnyOf(" /\\\t\r\n")) return juce::Result::fail(u8"请输入 IP 或域名；主机和端口分开填写"_es);
-    if (peer.port < 1 || peer.port > 65535) return juce::Result::fail(u8"端口范围为 1–65535"_es);
+    auto endpoint = normalizeEndpoint(peer.host, peer.port); if (endpoint.failed()) return endpoint;
+    peer.key = peer.key.trim().toLowerCase();
     if (!validKey(peer.key)) return juce::Result::fail(u8"连接密钥应为对方提供的 32 位十六进制字符串"_es);
     auto snapshots = peers();
     if (snapshots.size() >= maxPeers && std::none_of(snapshots.begin(), snapshots.end(), [&](auto& p) { return sameEndpoint(p.settings, peer); }))
@@ -51,12 +50,6 @@ juce::Result Controller::applyPreferences(const juce::String& name, int port, in
 void Controller::setSharingEnabled(bool enabled) {
     allowSharing = enabled; captureFailed = false;
     if (!enabled) { capture->stop(); endAudioActivity(); activeActivity = false; }
-}
-juce::String Controller::status() const {
-    if (problem.isNotEmpty()) return problem;
-    if (capture->running()) return u8"正在共享系统声音 · 已排除 EnjoySync 自身播放"_es;
-    if (!allowSharing) return u8"系统声音共享已暂停"_es;
-    return u8"就绪 · 在设备行中开启「共享」即可发送本机声音"_es;
 }
 void Controller::save() {
     auto snapshots = peers();
