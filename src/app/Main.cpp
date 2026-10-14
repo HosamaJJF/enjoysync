@@ -91,7 +91,9 @@ private:
            #if JUCE_MAC
             showDropdownMenu(menu);
            #else
-            menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this));
+            // The hidden Windows tray peer has no on-screen icon bounds.
+            menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this)
+                .withMousePosition().withStandardItemHeight(30));
            #endif
         }
     private:

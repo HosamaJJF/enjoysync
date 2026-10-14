@@ -61,7 +61,21 @@ void Appearance::update() {
 }
 juce::Font Appearance::getTextButtonFont(juce::TextButton&, int) { return uiFont(13, true); }
 juce::Font Appearance::getComboBoxFont(juce::ComboBox&) { return uiFont(13); }
-juce::Font Appearance::getPopupMenuFont() { return uiFont(13); }
+juce::Font Appearance::getPopupMenuFont() {
+   #if JUCE_WINDOWS
+    return uiFont(15);
+   #else
+    return uiFont(13);
+   #endif
+}
+bool Appearance::shouldPopupMenuScaleWithTargetComponent(const juce::PopupMenu::Options& options) {
+   #if JUCE_WINDOWS
+    // A tray's hidden peer may have a different DPI from the taskbar display.
+    // Let the popup's own native peer supply the display scale instead.
+    if (dynamic_cast<juce::SystemTrayIconComponent*>(options.getTargetComponent()) != nullptr) return false;
+   #endif
+    return juce::LookAndFeel_V4::shouldPopupMenuScaleWithTargetComponent(options);
+}
 void Appearance::drawButtonBackground(juce::Graphics& g, juce::Button& button, const juce::Colour& colour, bool over, bool down) {
     auto area = button.getLocalBounds().toFloat().reduced(0.5f);
     g.setColour(colour.interpolatedWith(palette.accent, down ? 0.18f : over ? 0.08f : 0.0f));

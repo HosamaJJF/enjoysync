@@ -17,6 +17,7 @@ public:
     juce::Font getTextButtonFont(juce::TextButton&, int) override;
     juce::Font getComboBoxFont(juce::ComboBox&) override;
     juce::Font getPopupMenuFont() override;
+    bool shouldPopupMenuScaleWithTargetComponent(const juce::PopupMenu::Options&) override;
     void drawButtonBackground(juce::Graphics&, juce::Button&, const juce::Colour&, bool, bool) override;
     void fillTextEditorBackground(juce::Graphics&, int, int, juce::TextEditor&) override;
     void drawTextEditorOutline(juce::Graphics&, int, int, juce::TextEditor&) override;

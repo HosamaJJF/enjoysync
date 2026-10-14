@@ -52,3 +52,9 @@
 
 - 提交 `d20f116` 的 GitHub Actions 中 macOS 编译、集成测试和打包通过；Windows 在 `Socket.cpp` 编译时报告 C2065：`SIO_UDP_CONNRESET` 未声明，测试尚未运行。
 - 该控制码由 Windows SDK 的 `mswsock.h` 声明，原修改错误地包含了 `mstcpip.h`。改为在 `Socket.cpp` 的 Windows 分支包含 `mswsock.h`，保持扩展头文件在实现文件内，继续由 CI 验证 Windows 编译、传输回归和便携版打包。
+
+## 2026-10-14 Windows 托盘菜单显示修复
+
+- 托盘菜单改为在鼠标位置弹出，避免使用隐藏托盘窗口的 `(0, 0)` 边界；取消继承该窗口的 DPI，让菜单及子菜单使用各自所在屏幕的原生缩放。
+- Windows 弹出菜单字体由 13 调整至 15，托盘菜单标准行高设为 30；macOS 原生菜单路径保持原样。Windows 验收步骤补充不同显示缩放、混合 DPI 多屏、托盘折叠区、子菜单及关闭行为。
+- 本机 macOS Release 编译通过，回环 UDP / DTLS / AOO 集成测试 1/1 通过，耗时 32.70 秒。首次测试因沙盒无法绑定本机 UDP 端口失败，允许本机端口访问后通过。此次 Windows 分支尚未编译，实际菜单定位、字体和跨屏缩放仍待 Windows 新构建真机验收。
