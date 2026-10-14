@@ -47,3 +47,8 @@
 - 使用真实 UDP 中继和合成音频验证每 13 包丢弃一包、1.2 秒双向中断和超过 5 秒的单向中断。零散丢包及短中断没有触发重连；最终单向故障测试在路径恢复后约 410 ms 重新连上，并验证音频恢复。
 - 最终 macOS Release 编译通过，`ctest --test-dir build-release --output-on-failure` 1/1 通过，耗时 33.03 秒；额外 8 轮同时拨号及保存设备启动恢复回归全部通过。应用 ad-hoc 签名和 `codesign --verify --deep --strict` 通过。测试监听端口改为先探测可用端口，避免与本机临时 UDP 端口竞争。
 - 默认增加 `logs/transport.log`，记录断线错误码、入站数据间隔、UDP / 队列丢弃计数和网络线程停顿；不记录密钥或音频。Windows 新构建及 Mac → Windows 真机至少 30 分钟持续共享仍待验证，现场复现时应对照两端相同时段日志。
+
+## 2026-10-14 Windows CI 头文件修复
+
+- 提交 `d20f116` 的 GitHub Actions 中 macOS 编译、集成测试和打包通过；Windows 在 `Socket.cpp` 编译时报告 C2065：`SIO_UDP_CONNRESET` 未声明，测试尚未运行。
+- 该控制码由 Windows SDK 的 `mswsock.h` 声明，原修改错误地包含了 `mstcpip.h`。改为在 `Socket.cpp` 的 Windows 分支包含 `mswsock.h`，保持扩展头文件在实现文件内，继续由 CI 验证 Windows 编译、传输回归和便携版打包。

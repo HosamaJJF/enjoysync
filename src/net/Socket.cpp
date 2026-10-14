@@ -1,7 +1,7 @@
 #include "Socket.h"
 #include "core/Settings.h"
 #if JUCE_WINDOWS
- #include <mstcpip.h>
+ #include <mswsock.h> // SIO_UDP_CONNRESET is declared by the Winsock extensions header.
 #else
  #include <fcntl.h>
  #include <cerrno>
