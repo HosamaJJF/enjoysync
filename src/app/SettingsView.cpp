@@ -1,4 +1,5 @@
 #include "SettingsView.h"
+#include "platform/AutoStart.h"
 
 namespace enjoysync {
 class SettingsView final : public juce::Component {
@@ -7,7 +8,7 @@ public:
         for (auto* component : std::initializer_list<juce::Component*> {
             &generalCaption, &audioCaption, &connectionCaption, &nameCaption, &themeCaption, &outputCaption,
             &codecCaption, &bufferCaption, &portCaption, &keyCaption, &name, &port, &buffer, &localKey,
-            &theme, &codec, &output, &hideDock, &copyKey, &apply, &feedback}) addAndMakeVisible(component);
+            &theme, &codec, &output, &autoStart, &hideDock, &copyKey, &apply, &feedback}) addAndMakeVisible(component);
         setLabel(generalCaption, u8"通用"_es, 15, true); setLabel(audioCaption, u8"音频"_es, 15, true);
         setLabel(connectionCaption, u8"连接"_es, 15, true);
         setLabel(nameCaption, u8"设备名称"_es); setLabel(themeCaption, u8"外观"_es);
@@ -39,6 +40,13 @@ public:
             output.addItem(c.settings.outputDevice, id); output.setSelectedId(id, juce::dontSendNotification);
         }
         if (output.getSelectedId() == 0) output.setSelectedId(1, juce::dontSendNotification);
+        autoStart.onClick = [this] {
+            const auto result = setAutoStartEnabled(autoStart.getToggleState());
+            const auto state = refreshAutoStart();
+            report(result, state == AutoStartState::requiresApproval ? autoStartApprovalMessage()
+                : state == AutoStartState::enabled ? u8"已开启开机自启动"_es : u8"已关闭开机自启动"_es);
+        };
+        refreshAutoStart();
         hideDock.setToggleState(c.settings.hideDock, juce::dontSendNotification);
        #if !JUCE_MAC
         hideDock.setVisible(false);
@@ -55,7 +63,15 @@ public:
             report(result, u8"已保存"_es);
             if (controller.changed) controller.changed();
         };
-        lookAndFeelChanged(); setSize(580, 650);
+        lookAndFeelChanged(); setSize(580, 696);
+    }
+    AutoStartState refreshAutoStart() {
+        const auto state = getAutoStartState();
+        const bool pending = state == AutoStartState::requiresApproval;
+        autoStart.setToggleState(state != AutoStartState::disabled, juce::dontSendNotification);
+        autoStart.setButtonText(pending ? u8"开机自启动（待批准）"_es : u8"开机自启动"_es);
+        autoStart.setTooltip(pending ? autoStartApprovalMessage() : u8"登录当前系统账户后启动 EnjoySync，切换后立即生效"_es);
+        return state;
     }
     void lookAndFeelChanged() override {
         const auto& p = appearance.colours();
@@ -67,27 +83,28 @@ public:
     }
     void paint(juce::Graphics& g) override {
         const auto& p = appearance.colours(); g.fillAll(p.surface); g.setColour(p.outline);
-        g.drawHorizontalLine(218, 28, (float)getWidth() - 28);
-        g.drawHorizontalLine(422, 28, (float)getWidth() - 28);
-        g.drawHorizontalLine(578, 0, (float)getWidth());
+        g.drawHorizontalLine(264, 28, (float)getWidth() - 28);
+        g.drawHorizontalLine(468, 28, (float)getWidth() - 28);
+        g.drawHorizontalLine(624, 0, (float)getWidth());
     }
     void resized() override {
         const int width = getWidth() - 56, half = (width - 20) / 2, right = 28 + half + 20;
         generalCaption.setBounds(28, 22, width, 24);
         nameCaption.setBounds(28, 60, width, 20); name.setBounds(28, 86, width, 38);
-        themeCaption.setBounds(28, 142, half, 20); theme.setBounds(28, 168, half, 38);
-        hideDock.setBounds(right, 170, half, 34);
-        audioCaption.setBounds(28, 236, width, 24);
-        outputCaption.setBounds(28, 274, width, 20); output.setBounds(28, 300, width, 38);
-        codecCaption.setBounds(28, 352, half, 20); codec.setBounds(28, 378, half, 32);
-        bufferCaption.setBounds(right, 352, half, 20); buffer.setBounds(right, 378, half, 32);
-        connectionCaption.setBounds(28, 440, width, 24);
-        portCaption.setBounds(28, 480, 140, 20); port.setBounds(28, 506, 140, 38);
-        keyCaption.setBounds(188, 480, width - 160, 20); localKey.setBounds(188, 506, width - 206, 38);
-        copyKey.setBounds(getWidth() - 66, 506, 38, 38);
-        feedback.setBounds(28, 599, width - 132, 28); apply.setBounds(getWidth() - 140, 594, 112, 36);
+        themeCaption.setBounds(28, 142, width, 20); theme.setBounds(28, 168, width, 38);
+        autoStart.setBounds(28, 222, half, 34); hideDock.setBounds(right, 222, half, 34);
+        audioCaption.setBounds(28, 282, width, 24);
+        outputCaption.setBounds(28, 320, width, 20); output.setBounds(28, 346, width, 38);
+        codecCaption.setBounds(28, 398, half, 20); codec.setBounds(28, 424, half, 32);
+        bufferCaption.setBounds(right, 398, half, 20); buffer.setBounds(right, 424, half, 32);
+        connectionCaption.setBounds(28, 486, width, 24);
+        portCaption.setBounds(28, 526, 140, 20); port.setBounds(28, 552, 140, 38);
+        keyCaption.setBounds(188, 526, width - 160, 20); localKey.setBounds(188, 552, width - 206, 38);
+        copyKey.setBounds(getWidth() - 66, 552, 38, 38);
+        feedback.setBounds(28, 645, width - 132, 28); apply.setBounds(getWidth() - 140, 640, 112, 36);
     }
 private:
+    static juce::String autoStartApprovalMessage() { return u8"请在系统设置的“通用 → 登录项”中允许 EnjoySync"_es; }
     void report(const juce::Result& result, const juce::String& success) {
         failed = result.failed(); setLabel(feedback, failed ? result.getErrorMessage() : success, 12);
         feedback.setColour(juce::Label::textColourId, failed ? appearance.colours().danger : appearance.colours().accent);
@@ -99,6 +116,7 @@ private:
                 codecCaption, bufferCaption, portCaption, keyCaption, feedback;
     juce::TextEditor name, port, buffer, localKey;
     juce::ComboBox theme, codec, output;
+    juce::ToggleButton autoStart {u8"开机自启动"_es};
     juce::ToggleButton hideDock {u8"后台隐藏 Dock"_es};
     IconButton copyKey;
     juce::TextButton apply {u8"保存设置"_es};
@@ -113,6 +131,10 @@ SettingsWindow::SettingsWindow(Controller& controller, Appearance& appearance)
     setApplicationTheme(controller.settings.theme);
 }
 void SettingsWindow::closeButtonPressed() { setVisible(false); }
+void SettingsWindow::visibilityChanged() {
+    DocumentWindow::visibilityChanged();
+    if (isVisible()) if (auto* view = dynamic_cast<SettingsView*>(getContentComponent())) view->refreshAutoStart();
+}
 bool SettingsWindow::keyPressed(const juce::KeyPress& key) {
     if (key == juce::KeyPress::escapeKey) { closeButtonPressed(); return true; }
     return DocumentWindow::keyPressed(key);

@@ -7,6 +7,7 @@ class SettingsWindow final : public juce::DocumentWindow {
 public:
     SettingsWindow(Controller&, Appearance&);
     void closeButtonPressed() override;
+    void visibilityChanged() override;
     bool keyPressed(const juce::KeyPress&) override;
 };
 }

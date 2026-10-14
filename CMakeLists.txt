@@ -73,7 +73,7 @@ if(APPLE)
     target_sources(EnjoySync PRIVATE src/platform/CaptureMac.mm src/platform/DesktopMac.mm)
     set_source_files_properties(src/platform/CaptureMac.mm src/platform/DesktopMac.mm
         PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
-    target_link_libraries(EnjoySync PRIVATE "-framework CoreAudio" "-framework AudioToolbox" "-framework AppKit")
+    target_link_libraries(EnjoySync PRIVATE "-framework CoreAudio" "-framework AudioToolbox" "-framework AppKit" "-framework ServiceManagement")
     target_link_options(EnjoySync PRIVATE "-Wl,-dead_strip_dylibs")
 elseif(WIN32)
     target_sources(EnjoySync PRIVATE src/platform/CaptureWindows.cpp src/platform/DesktopWindows.cpp)

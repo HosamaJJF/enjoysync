@@ -11,6 +11,7 @@
 - **单端口加密直连**：控制信令与音频流共用单个 UDP 端口（默认 `51000`），支持 IPv4 / IPv6 双栈与域名解析。采用 DTLS 1.2（AES-128-GCM）加密，通过 128-bit 密钥配对。
 - **稳健的连接管理**：支持断线自动重连（指数退避）、设备身份去重、多地址自动寻路以及双向同时拨号收敛。
 - **独立路由与轻量驻留**：支持多设备同时收发，每台设备可独立控制发送、接收、静音、音量与开机自连。支持托盘（Windows）与菜单栏（macOS，可隐藏 Dock 图标）后台驻留。
+- **开机自启动**：在“设置 → 通用”中开启后，登录当前系统账户时自动启动 EnjoySync；开关立即生效。
 
 ## 快速上手
 
@@ -40,6 +41,7 @@
 cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
 cmake --build build-release --parallel 6
 ctest --test-dir build-release --output-on-failure
+codesign --force --deep --sign - build-release/EnjoySync_artefacts/Release/EnjoySync.app
 open build-release/EnjoySync_artefacts/Release/EnjoySync.app
 
 ```
@@ -62,6 +64,8 @@ ctest --test-dir build -C Release --output-on-failure
 
 - **macOS**：`~/Library/Application Support/EnjoySync/`
 - **Windows**：`%APPDATA%\EnjoySync\`
+
+“开机自启动”由系统启动项管理，设置窗口会在打开时读取注册状态。macOS 如显示“待批准”，请在系统设置的“通用 → 登录项”中允许 EnjoySync。Windows 便携版启用后请保留程序所在路径；移动程序后需重新关闭并开启此选项。如果在 Windows 系统设置或任务管理器中禁用了启动项，还需在那里重新启用。
 
 **常用调试手段**：
 
