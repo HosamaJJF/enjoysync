@@ -5,6 +5,7 @@
 #include <cmath>
 #include <chrono>
 #include <thread>
+#include <utility>
 using namespace enjoysync;
 static void check(bool condition, const char* message) { if (!condition) throw std::runtime_error(message); }
 template<class Predicate> static bool waitFor(Predicate predicate, int timeoutMs = 4000) {
@@ -36,14 +37,23 @@ static int availableTestPorts(int count) {
 struct Peaks { float a = 0, b = 0; };
 class AudioPump {
 public:
-    AudioPump(AudioEngine& a, AudioEngine& b) : engineA(a), engineB(b), worker([this, &a, &b] {
+    AudioPump(AudioEngine& a, AudioEngine& b, int initialStallMs = 0, int periodicStallMs = 0)
+        : engineA(a), engineB(b), worker([this, &a, &b, initialStallMs, periodicStallMs] {
         std::array<float, 480> tone {}, al {}, ar {}, bl {}, br {};
         std::array<Peaks, 20> history {}; int cursor = 0; double phase = 0;
         auto next = std::chrono::steady_clock::now();
+        auto lastCallback = next - std::chrono::milliseconds(10);
+        std::this_thread::sleep_for(std::chrono::milliseconds(initialStallMs));
+        // Simulate an audio device clock independently of the runner's scheduling.
+        auto sampleTime = aoo_getCurrentNtpTime();
         while (running) {
+            const auto callbackTime = std::chrono::steady_clock::now();
+            if (callbackTime - lastCallback < std::chrono::milliseconds(5)) ++catchUpCallbacks;
+            lastCallback = callbackTime;
             std::unique_lock lock(controlMutex);
             for (auto& sample : tone) { sample = 0.2f * (float)std::sin(phase); phase += 2 * 3.141592653589793 * 440 / 48000; }
-            auto time = aoo_getCurrentNtpTime();
+            const auto time = sampleTime;
+            sampleTime += aoo_ntpTimeFromSeconds(0.01);
             a.pushCapture(tone.data(), tone.data(), sourceAFrames, time); b.pushCapture(tone.data(), tone.data(), 480, time);
             a.render(al.data(), ar.data(), 480, time); b.render(bl.data(), br.data(), outputBFrames, time);
             Peaks current;
@@ -53,11 +63,22 @@ public:
             for (const auto& frame : history) { peak.a = std::max(peak.a, frame.a); peak.b = std::max(peak.b, frame.b); }
             peakA = peak.a; peakB = peak.b;
             lock.unlock();
-            next += std::chrono::milliseconds(10); std::this_thread::sleep_until(next);
+            if (periodicStallMs > 0 && cursor % 8 == 0)
+                std::this_thread::sleep_for(std::chrono::milliseconds(periodicStallMs));
+            next += std::chrono::milliseconds(10);
+            // A delayed VM thread must not replay missed callbacks in a tight loop.
+            const auto now = std::chrono::steady_clock::now();
+            if (next < now) next = now + std::chrono::milliseconds(10);
+            std::this_thread::sleep_until(next);
         }
     }) {}
     ~AudioPump() { running = false; worker.join(); }
     Peaks measure(int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); return {peakA.load(), peakB.load()}; }
+    Peaks waitForOutput(int timeoutMs = 4000) {
+        waitFor([&] { return peakB.load() > 0.02f; }, timeoutMs);
+        return {peakA.load(), peakB.load()};
+    }
+    unsigned catchUpCount() const { return catchUpCallbacks.load(); }
     void use44100() {
         std::lock_guard lock(controlMutex); sourceAFrames = outputBFrames = 441;
         engineA.configureCapture(44100); engineB.configureOutput(44100, 441);
@@ -69,8 +90,27 @@ private:
     int sourceAFrames = 480, outputBFrames = 480;
     std::atomic<bool> running {true};
     std::atomic<float> peakA {0}, peakB {0};
+    std::atomic<unsigned> catchUpCallbacks {0};
     std::thread worker;
 };
+static void audioStartupTests() {
+    for (auto delays : {std::pair{1700, 0}, {0, 80}}) {
+        Settings a, b; a.port = availableTestPorts(2); b.port = a.port + 1;
+        AudioEngine aa, ab; aa.setCapturing(true); ab.setCapturing(true);
+        Transport ta(aa, a), tb(ab, b);
+        check(ta.start().wasOk() && tb.start().wasOk(), "audio startup listeners unavailable");
+        AudioPump pump(aa, ab, delays.first, delays.second);
+        ta.addOrConnect(peerFor(b));
+        check(waitFor([&] { return connected(ta) && connected(tb); }), "audio startup pairing failed");
+        check(pump.waitForOutput().b > 0.02f, "Opus audio failed to start after a delayed synthetic callback");
+        auto peak = pump.measure(600);
+        std::cout << "startup stall_ms=" << delays.first << " periodic_stall_ms=" << delays.second
+                  << " peak=" << peak.b << " sent=" << ta.mediaSent
+                  << " received=" << tb.mediaReceived << " underruns=" << ab.underruns(0) << std::endl;
+        check(peak.b > 0.02f, "Opus audio failed after a delayed synthetic callback");
+        check(pump.catchUpCount() == 0, "delayed synthetic callbacks were replayed in a burst");
+    }
+}
 static void settingsTests() {
     check(validKey("0123456789abcdef0123456789abcdef"), "valid pairing key rejected");
     check(!validKey("password"), "weak/invalid pairing key accepted");
@@ -160,11 +200,12 @@ static void transportTests() {
         std::cerr << stateName(p.state) << ": " << p.detail << "\n";
     check(paired, "IPv4 DTLS pairing failed");
     check(ta.snapshot().size() == 1 && tb.snapshot().size() == 1, "repeat connect created duplicate devices");
-    auto peak = pump.measure(1300);
+    auto peak = pump.waitForOutput();
     if (peak.b <= 0.02f) std::cerr << "audio: input=" << aa.inputLevel() << " source=" << aa.captureResult
         << " receiver=" << ab.receiveResult << " level=" << ab.level(0) << " underruns=" << ab.underruns(0)
         << " buffer=" << ab.latencyMs(0) << " format=" << aa.formatResult << " attach=" << aa.attachResult
-        << " sending=" << ta.anySending() << " sent=" << ta.mediaSent << " received=" << tb.mediaReceived << "\n";
+        << " sending=" << ta.anySending() << " sent=" << ta.mediaSent << " received=" << tb.mediaReceived
+        << " catch_up_callbacks=" << pump.catchUpCount() << "\n";
     check(peak.b > 0.02f, "Opus audio not decoded through encrypted IPv4 transport");
     std::cout << "PASS IPv4 DTLS pairing, duplicate connect, Opus audio; output peak=" << peak.b << "\n";
     auto pb = tb.snapshot()[0].settings; pb.send = true; tb.updatePeer(pb);
@@ -332,7 +373,8 @@ int main(int argc, char** argv) {
         if (argc > 1 && juce::String(argv[1]) == "--simultaneous") {
             for (int i = 0; i < 8; ++i) simultaneousTests();
         } else if (argc > 1 && juce::String(argv[1]) == "--recovery") { rapidRestartTests(); impairmentTests(); }
-        else { settingsTests(); sourceOverflowTests(); transportTests(); simultaneousTests(); rapidRestartTests(); impairmentTests(); }
+        else if (argc > 1 && juce::String(argv[1]) == "--audio-startup") { audioStartupTests(); }
+        else { settingsTests(); sourceOverflowTests(); audioStartupTests(); transportTests(); simultaneousTests(); rapidRestartTests(); impairmentTests(); }
     }
     catch (const std::exception& e) { std::cerr << "FAIL " << e.what() << "\n"; result = 1; }
     aoo_terminate(); return result;

@@ -23,6 +23,8 @@ jobs:
       - name: Build
         run: cmake --build build --config Release --parallel 4
       - name: Test encrypted audio and connection lifecycle
+        env:
+          ENJOYSYNC_TRACE: "1"
         run: ctest --test-dir build -C Release --output-on-failure
       - name: Package Windows portable build
         if: runner.os == 'Windows'
