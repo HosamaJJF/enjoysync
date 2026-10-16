@@ -12,7 +12,7 @@ AutoStartState getAutoStartState() {
 juce::Result setAutoStartEnabled(bool enabled) {
     if (enabled) {
         // Quote the executable path so spaces and non-ASCII installation paths work.
-        const auto command = juce::File::getSpecialLocation(juce::File::currentExecutableFile).getFullPathName().quoted();
+        const auto command = juce::File::getSpecialLocation(juce::File::currentExecutableFile).getFullPathName().quoted() + " --autostart";
         if (std::wcslen(command.toWideCharPointer()) > 260)
             return juce::Result::fail(u8"应用路径过长，无法启用开机自启动，请将 EnjoySync 移至较短的路径"_es);
         if (!juce::WindowsRegistry::setValue(autoStartValue, command))
@@ -21,6 +21,9 @@ juce::Result setAutoStartEnabled(bool enabled) {
         return juce::Result::fail(u8"无法关闭开机自启动，请检查当前账户的启动项权限"_es);
     }
     return juce::Result::ok();
+}
+void handleStartupLaunch(const juce::String& commandLine, std::function<void(bool)> onReady) {
+    onReady(juce::StringArray::fromTokens(commandLine, true).contains("--autostart"));
 }
 void setDockVisible(bool) {}
 void setApplicationTheme(const juce::String& mode) {

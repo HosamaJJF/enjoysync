@@ -21,7 +21,7 @@ struct Settings {
     juce::String name = juce::SystemStats::getComputerName();
     juce::String key = generateKey();
     int port = 51000, bufferMs = 30;
-    bool hideDock = true, pcm = false;
+    bool hideDock = true, pcm = false, hideOnAutoStart = false;
     juce::String outputDevice;
     juce::String theme {"system"};
     std::vector<PeerSettings> peers;

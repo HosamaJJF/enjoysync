@@ -94,6 +94,7 @@ juce::var Settings::toJson() const {
     auto* o = object(); o->setProperty("version", 2); o->setProperty("deviceId", deviceId);
     o->setProperty("name", name); o->setProperty("key", key); o->setProperty("port", port);
     o->setProperty("bufferMs", bufferMs); o->setProperty("hideDock", hideDock);
+    o->setProperty("hideOnAutoStart", hideOnAutoStart);
     o->setProperty("pcm", pcm); o->setProperty("outputDevice", outputDevice);
     o->setProperty("theme", theme);
     juce::Array<juce::var> items;
@@ -110,6 +111,7 @@ Settings Settings::fromJson(const juce::var& v) {
     s.port = juce::jlimit(1, 65535, (int)get(v, "port", 51000));
     s.bufferMs = juce::jlimit(20, 200, (int)get(v, "bufferMs", 30));
     s.hideDock = (bool)get(v, "hideDock", true); s.pcm = (bool)get(v, "pcm", false);
+    s.hideOnAutoStart = (bool)get(v, "hideOnAutoStart", false);
     s.outputDevice = v["outputDevice"].toString();
     const auto theme = v["theme"].toString();
     if (theme == "light" || theme == "dark") s.theme = theme;

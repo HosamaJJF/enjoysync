@@ -155,6 +155,11 @@ static void settingsTests() {
     check(restored.peers.size() == 1, "duplicate saved records not merged");
     check(restored.deviceId == s.deviceId && restored.key == s.key, "identity not persisted");
     check(restored.theme == "system", "older settings should follow system appearance");
+    check(!restored.hideOnAutoStart, "startup hiding should default to off");
+    s.hideOnAutoStart = true;
+    check(Settings::fromJson(s.toJson()).hideOnAutoStart, "startup hiding preference not persisted");
+    auto legacySettings = s.toJson(); legacySettings.getDynamicObject()->removeProperty("hideOnAutoStart");
+    check(!Settings::fromJson(legacySettings).hideOnAutoStart, "older settings should show the startup window");
     for (auto mode : {"light", "dark", "system"}) {
         s.theme = mode; check(Settings::fromJson(s.toJson()).theme == mode, "appearance preference not persisted");
     }
@@ -170,7 +175,8 @@ static void settingsTests() {
           "legacy pasted endpoint was not repaired on load");
     auto file = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("enjoysync-settings", ".json");
     check(s.save(file).wasOk(), "atomic settings save failed");
-    check(Settings::load(file).deviceId == s.deviceId, "settings reload failed"); file.deleteFile();
+    const auto reloaded = Settings::load(file);
+    check(reloaded.deviceId == s.deviceId && reloaded.hideOnAutoStart, "settings reload failed"); file.deleteFile();
     check(retryDelayMs(0) == 1000 && retryDelayMs(100) <= 32000, "retry backoff unbounded");
     std::cout << "PASS settings, endpoint normalization and bounded backoff\n";
 }

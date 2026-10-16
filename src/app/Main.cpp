@@ -1,4 +1,5 @@
 #include "MainView.h"
+#include "platform/AutoStart.h"
 #include <aoo.h>
 namespace enjoysync {
 class EnjoySyncApplication final : public juce::JUCEApplication {
@@ -26,7 +27,10 @@ public:
         juce::LookAndFeel::setDefaultLookAndFeel(appearance.get());
         window = std::make_unique<Window>(*this, *controller, *appearance);
         tray = std::make_unique<Tray>(*this);
-        show();
+        handleStartupLaunch(commandLine, [this](bool startedAtLogin) {
+            if (startedAtLogin && controller->settings.hideOnAutoStart && getAutoStartState() == AutoStartState::enabled) hide();
+            else show();
+        });
     }
     void shutdown() override {
         tray.reset(); window.reset(); controller.reset();

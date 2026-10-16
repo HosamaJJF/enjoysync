@@ -26,6 +26,23 @@ juce::Result setAutoStartEnabled(bool enabled) {
     }
     return juce::Result::ok();
 }
+void handleStartupLaunch(const juce::String&, std::function<void(bool)> onReady) {
+    auto notify = [onReady] {
+        auto* event = NSAppleEventManager.sharedAppleEventManager.currentAppleEvent;
+        auto* properties = [event paramDescriptorForKeyword:keyAEPropData];
+        const bool loginItem = event.eventID == kAEOpenApplication
+            && ([event paramDescriptorForKeyword:keyAELaunchedAsLogInItem] != nil
+                || [properties descriptorForKeyword:keyAELaunchedAsLogInItem] != nil);
+        onReady(loginItem);
+    };
+    if (NSApp.running) { notify(); return; }
+    __block id observer = nil;
+    observer = [NSNotificationCenter.defaultCenter addObserverForName:NSApplicationDidFinishLaunchingNotification
+        object:NSApp queue:nil usingBlock:^(NSNotification*) {
+            [NSNotificationCenter.defaultCenter removeObserver:observer]; observer = nil;
+            notify();
+        }];
+}
 void setDockVisible(bool visible) {
     [NSApp setActivationPolicy:visible ? NSApplicationActivationPolicyRegular : NSApplicationActivationPolicyAccessory];
     if (visible) [NSApp activateIgnoringOtherApps:YES];

@@ -8,7 +8,7 @@ public:
         for (auto* component : std::initializer_list<juce::Component*> {
             &generalCaption, &audioCaption, &connectionCaption, &nameCaption, &themeCaption, &outputCaption,
             &codecCaption, &bufferCaption, &portCaption, &keyCaption, &name, &port, &buffer, &localKey,
-            &theme, &codec, &output, &autoStart, &hideDock, &copyKey, &apply, &feedback}) addAndMakeVisible(component);
+            &theme, &codec, &output, &autoStart, &hideOnAutoStart, &hideDock, &copyKey, &apply, &feedback}) addAndMakeVisible(component);
         setLabel(generalCaption, u8"通用"_es, 15, true); setLabel(audioCaption, u8"音频"_es, 15, true);
         setLabel(connectionCaption, u8"连接"_es, 15, true);
         setLabel(nameCaption, u8"设备名称"_es); setLabel(themeCaption, u8"外观"_es);
@@ -47,6 +47,18 @@ public:
                 : state == AutoStartState::enabled ? u8"已开启开机自启动"_es : u8"已关闭开机自启动"_es);
         };
         refreshAutoStart();
+        hideOnAutoStart.setToggleState(c.settings.hideOnAutoStart, juce::dontSendNotification);
+        hideOnAutoStart.setTooltip(u8"仅在已启用开机自启动且由系统登录启动时隐藏界面，切换后立即保存"_es);
+        hideOnAutoStart.onClick = [this] {
+            // Refresh older Windows Run entries so they also pass the login-launch marker.
+            auto result = getAutoStartState() == AutoStartState::enabled ? setAutoStartEnabled(true)
+                : juce::Result::fail(u8"请先启用开机自启动"_es);
+            if (result.wasOk()) {
+                controller.settings.hideOnAutoStart = hideOnAutoStart.getToggleState(); controller.save();
+            } else hideOnAutoStart.setToggleState(controller.settings.hideOnAutoStart, juce::dontSendNotification);
+            refreshAutoStart();
+            report(result, u8"已保存"_es);
+        };
         hideDock.setToggleState(c.settings.hideDock, juce::dontSendNotification);
        #if !JUCE_MAC
         hideDock.setVisible(false);
@@ -63,7 +75,7 @@ public:
             report(result, u8"已保存"_es);
             if (controller.changed) controller.changed();
         };
-        lookAndFeelChanged(); setSize(580, 696);
+        lookAndFeelChanged(); setSize(580, 736);
     }
     AutoStartState refreshAutoStart() {
         const auto state = getAutoStartState();
@@ -71,6 +83,7 @@ public:
         autoStart.setToggleState(state != AutoStartState::disabled, juce::dontSendNotification);
         autoStart.setButtonText(pending ? u8"开机自启动（待批准）"_es : u8"开机自启动"_es);
         autoStart.setTooltip(pending ? autoStartApprovalMessage() : u8"登录当前系统账户后启动 EnjoySync，切换后立即生效"_es);
+        hideOnAutoStart.setEnabled(state == AutoStartState::enabled);
         return state;
     }
     void lookAndFeelChanged() override {
@@ -83,9 +96,9 @@ public:
     }
     void paint(juce::Graphics& g) override {
         const auto& p = appearance.colours(); g.fillAll(p.surface); g.setColour(p.outline);
-        g.drawHorizontalLine(264, 28, (float)getWidth() - 28);
-        g.drawHorizontalLine(468, 28, (float)getWidth() - 28);
-        g.drawHorizontalLine(624, 0, (float)getWidth());
+        g.drawHorizontalLine(304, 28, (float)getWidth() - 28);
+        g.drawHorizontalLine(508, 28, (float)getWidth() - 28);
+        g.drawHorizontalLine(664, 0, (float)getWidth());
     }
     void resized() override {
         const int width = getWidth() - 56, half = (width - 20) / 2, right = 28 + half + 20;
@@ -93,15 +106,16 @@ public:
         nameCaption.setBounds(28, 60, width, 20); name.setBounds(28, 86, width, 38);
         themeCaption.setBounds(28, 142, width, 20); theme.setBounds(28, 168, width, 38);
         autoStart.setBounds(28, 222, half, 34); hideDock.setBounds(right, 222, half, 34);
-        audioCaption.setBounds(28, 282, width, 24);
-        outputCaption.setBounds(28, 320, width, 20); output.setBounds(28, 346, width, 38);
-        codecCaption.setBounds(28, 398, half, 20); codec.setBounds(28, 424, half, 32);
-        bufferCaption.setBounds(right, 398, half, 20); buffer.setBounds(right, 424, half, 32);
-        connectionCaption.setBounds(28, 486, width, 24);
-        portCaption.setBounds(28, 526, 140, 20); port.setBounds(28, 552, 140, 38);
-        keyCaption.setBounds(188, 526, width - 160, 20); localKey.setBounds(188, 552, width - 206, 38);
-        copyKey.setBounds(getWidth() - 66, 552, 38, 38);
-        feedback.setBounds(28, 645, width - 132, 28); apply.setBounds(getWidth() - 140, 640, 112, 36);
+        hideOnAutoStart.setBounds(28, 262, width, 34);
+        audioCaption.setBounds(28, 322, width, 24);
+        outputCaption.setBounds(28, 360, width, 20); output.setBounds(28, 386, width, 38);
+        codecCaption.setBounds(28, 438, half, 20); codec.setBounds(28, 464, half, 32);
+        bufferCaption.setBounds(right, 438, half, 20); buffer.setBounds(right, 464, half, 32);
+        connectionCaption.setBounds(28, 526, width, 24);
+        portCaption.setBounds(28, 566, 140, 20); port.setBounds(28, 592, 140, 38);
+        keyCaption.setBounds(188, 566, width - 160, 20); localKey.setBounds(188, 592, width - 206, 38);
+        copyKey.setBounds(getWidth() - 66, 592, 38, 38);
+        feedback.setBounds(28, 685, width - 132, 28); apply.setBounds(getWidth() - 140, 680, 112, 36);
     }
 private:
     static juce::String autoStartApprovalMessage() { return u8"请在系统设置的“通用 → 登录项”中允许 EnjoySync"_es; }
@@ -117,6 +131,7 @@ private:
     juce::TextEditor name, port, buffer, localKey;
     juce::ComboBox theme, codec, output;
     juce::ToggleButton autoStart {u8"开机自启动"_es};
+    juce::ToggleButton hideOnAutoStart {u8"开机自启动后隐藏到后台"_es};
     juce::ToggleButton hideDock {u8"后台隐藏 Dock"_es};
     IconButton copyKey;
     juce::TextButton apply {u8"保存设置"_es};
