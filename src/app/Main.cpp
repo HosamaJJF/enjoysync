@@ -1,7 +1,9 @@
 #include "MainView.h"
 #include "TrayIcon.h"
 #include "platform/AutoStart.h"
+#include "platform/DesktopEvents.h"
 #include "platform/SystemShutdown.h"
+#include "net/Diagnostics.h"
 #include <aoo.h>
 namespace enjoysync {
 class EnjoySyncApplication final : public juce::JUCEApplication {
@@ -35,9 +37,12 @@ public:
         });
     }
     void shutdown() override {
+        const auto started = juce::Time::getMillisecondCounterHiRes();
+        logNetwork("SHUTDOWN begin");
         tray.reset(); window.reset(); controller.reset();
-        juce::Logger::setCurrentLogger(nullptr); networkLog.reset();
         juce::LookAndFeel::setDefaultLookAndFeel(nullptr); appearance.reset(); aoo_terminate();
+        logNetwork("SHUTDOWN complete elapsed_ms=" + juce::String(juce::Time::getMillisecondCounterHiRes() - started, 1));
+        juce::Logger::setCurrentLogger(nullptr); networkLog.reset();
     }
     void systemRequestedQuit() override {
         // Windows may terminate us as soon as WM_ENDSESSION returns.
@@ -45,6 +50,15 @@ public:
         quit();
     }
     void anotherInstanceStarted(const juce::String&) override { show(); }
+    void requestMenuQuit() {
+        logNetwork("SHUTDOWN requested from menu");
+       #if JUCE_MAC
+        // Let the native menu finish tracking before stopping NSApplication.
+        afterNativeEventTracking([this] { systemRequestedQuit(); });
+       #else
+        systemRequestedQuit();
+       #endif
+    }
     void show() {
         setDockVisible(true); window->setMinimised(false); window->setVisible(true); window->toFront(true);
         if (auto* view = dynamic_cast<MainView*>(window->getContentComponent())) view->refresh();
@@ -99,7 +113,13 @@ private:
             if (!event.mods.isPopupMenu()) { owner.show(); return; }
             auto menu = createMenu();
            #if JUCE_MAC
-            showDropdownMenu(menu);
+            // Opening a synchronous NSMenu from the status button's mouseDown
+            // consumes its mouseUp in a nested loop. AppKit can then keep the
+            // outer button-tracking loop alive even after the user chooses Quit.
+            // JUCE callAsync also runs in tracking mode, so use default mode only.
+            afterNativeEventTracking([safe = juce::Component::SafePointer<Tray>(this), menu] {
+                if (safe) safe->showDropdownMenu(menu);
+            });
            #else
             // The hidden Windows tray peer has no on-screen icon bounds.
             menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this)
@@ -122,7 +142,7 @@ private:
                 devices.addItem(peer.settings.name.isEmpty() ? peer.settings.host : peer.settings.name, [this, id] { owner.controller->transport->connect(id); });
             }
             menu.addSubMenu(u8"快捷连接"_es, devices, devices.getNumItems() > 0); menu.addSeparator();
-            menu.addItem(u8"退出 EnjoySync"_es, [this] { owner.quit(); });
+            menu.addItem(u8"退出 EnjoySync"_es, [this] { owner.requestMenuQuit(); });
             return menu;
         }
         EnjoySyncApplication& owner;

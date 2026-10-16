@@ -6,6 +6,9 @@
 #if JUCE_WINDOWS
  #include <windows.h>
 #endif
+#if JUCE_MAC
+void nativeEventTrackingTests();
+#endif
 
 static void check(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
@@ -103,6 +106,9 @@ int main() {
     TestApplication app;
     try {
         trayIconTests();
+       #if JUCE_MAC
+        nativeEventTrackingTests();
+       #endif
        #if JUCE_WINDOWS
         shutdownTests(app);
        #endif
