@@ -1,5 +1,6 @@
 #include "SettingsView.h"
 #include "platform/AutoStart.h"
+#include "platform/SystemShutdown.h"
 
 namespace enjoysync {
 class SettingsView final : public juce::Component {
@@ -144,6 +145,7 @@ SettingsWindow::SettingsWindow(Controller& controller, Appearance& appearance)
     setUsingNativeTitleBar(true); setResizable(false, false);
     setContentOwned(new SettingsView(controller, appearance), true); centreWithSize(getWidth(), getHeight());
     setApplicationTheme(controller.settings.theme);
+    allowSystemShutdown(*this);
 }
 void SettingsWindow::closeButtonPressed() { setVisible(false); }
 void SettingsWindow::visibilityChanged() {

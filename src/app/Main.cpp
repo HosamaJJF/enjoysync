@@ -1,5 +1,6 @@
 #include "MainView.h"
 #include "platform/AutoStart.h"
+#include "platform/SystemShutdown.h"
 #include <aoo.h>
 namespace enjoysync {
 class EnjoySyncApplication final : public juce::JUCEApplication {
@@ -37,7 +38,11 @@ public:
         juce::Logger::setCurrentLogger(nullptr); networkLog.reset();
         juce::LookAndFeel::setDefaultLookAndFeel(nullptr); appearance.reset(); aoo_terminate();
     }
-    void systemRequestedQuit() override { quit(); }
+    void systemRequestedQuit() override {
+        // Windows may terminate us as soon as WM_ENDSESSION returns.
+        if (controller) controller->save();
+        quit();
+    }
     void anotherInstanceStarted(const juce::String&) override { show(); }
     void show() {
         setDockVisible(true); window->setMinimised(false); window->setVisible(true); window->toFront(true);
@@ -59,6 +64,7 @@ private:
             setUsingNativeTitleBar(true); setResizable(true, false); setResizeLimits(820, 470, 1800, 1400);
             setContentOwned(new MainView(c, appearance), true); centreWithSize(getWidth(), getHeight());
             setApplicationTheme(c.settings.theme);
+            allowSystemShutdown(*this);
         }
         void closeButtonPressed() override { owner.hide(); }
         void minimisationStateChanged(bool minimised) override {
@@ -73,6 +79,7 @@ private:
     class Tray final : public juce::SystemTrayIconComponent, private juce::MenuBarModel {
     public:
         explicit Tray(EnjoySyncApplication& owner_) : owner(owner_) {
+            allowSystemShutdown(*this);
             juce::Image icon(juce::Image::ARGB, 64, 64, true); juce::Graphics g(icon);
             g.setColour(juce::Colour(0xff71e7bd));
             for (int i = 0; i < 5; ++i) { float h = i == 2 ? 48.0f : (i == 0 || i == 4 ? 18.0f : 34.0f); g.fillRoundedRectangle(8.0f + i * 10.0f, (64 - h) / 2, 6, h, 3); }
