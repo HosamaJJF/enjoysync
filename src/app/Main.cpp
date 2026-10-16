@@ -1,4 +1,5 @@
 #include "MainView.h"
+#include "TrayIcon.h"
 #include "platform/AutoStart.h"
 #include "platform/SystemShutdown.h"
 #include <aoo.h>
@@ -80,9 +81,7 @@ private:
     public:
         explicit Tray(EnjoySyncApplication& owner_) : owner(owner_) {
             allowSystemShutdown(*this);
-            juce::Image icon(juce::Image::ARGB, 64, 64, true); juce::Graphics g(icon);
-            g.setColour(juce::Colour(0xff71e7bd));
-            for (int i = 0; i < 5; ++i) { float h = i == 2 ? 48.0f : (i == 0 || i == 4 ? 18.0f : 34.0f); g.fillRoundedRectangle(8.0f + i * 10.0f, (64 - h) / 2, 6, h, 3); }
+            const auto icon = createTrayIcon();
             setIconImage(icon, icon); setIconTooltip("EnjoySync");
            #if JUCE_MAC
             // JUCE's native status menu requires a live Mac main-menu model.

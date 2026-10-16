@@ -1,8 +1,11 @@
 #include "platform/SystemShutdown.h"
+#include "app/TrayIcon.h"
 #include <juce_gui_extra/juce_gui_extra.h>
-#include <windows.h>
 #include <iostream>
 #include <stdexcept>
+#if JUCE_WINDOWS
+ #include <windows.h>
+#endif
 
 static void check(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
@@ -16,6 +19,47 @@ public:
     void systemRequestedQuit() override { ++quitRequests; }
     int quitRequests = 0;
 };
+static void trayIconTests() {
+    const auto icon = enjoysync::createTrayIcon();
+    check(icon.getPixelAt(0, 0).getAlpha() == 0, "tray background is not transparent");
+    check(icon.getPixelAt(31, 32) == juce::Colour(0xff71e7bd), "tray waveform was not rendered before use");
+    for (int size : {16, 20, 24, 32, 64}) {
+        const auto scaled = icon.rescaled(size, size, juce::Graphics::highResamplingQuality);
+        int coloured = 0;
+        for (int y = 0; y < size; ++y) for (int x = 0; x < size; ++x) {
+            const auto pixel = scaled.getPixelAt(x, y);
+            if (pixel.getAlpha() > 128 && pixel.getGreen() > 150 && pixel.getRed() > 60) ++coloured;
+        }
+        check(coloured > size * size / 16, "scaled tray icon is blank or black");
+        check(scaled.getPixelAt(0, 0).getAlpha() == 0, "scaled tray icon lost transparency");
+       #if JUCE_WINDOWS
+        // ComponentPeer::setIcon uses the same JUCE HICON converter as the tray.
+        // Read the actual native bitmap back to catch alpha/renderer regressions.
+        juce::Component component; component.addToDesktop(0); component.getPeer()->setIcon(scaled);
+        const auto window = static_cast<HWND>(component.getPeer()->getNativeHandle());
+        const auto nativeIcon = reinterpret_cast<HICON>(SendMessageW(window, WM_GETICON, ICON_BIG, 0));
+        ICONINFO info {};
+        check(nativeIcon != nullptr && GetIconInfo(nativeIcon, &info), "native tray icon conversion failed");
+        BITMAPINFO bitmap {};
+        bitmap.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bitmap.bmiHeader.biWidth = size; bitmap.bmiHeader.biHeight = -size;
+        bitmap.bmiHeader.biPlanes = 1; bitmap.bmiHeader.biBitCount = 32; bitmap.bmiHeader.biCompression = BI_RGB;
+        std::vector<uint32_t> pixels(static_cast<size_t>(size * size));
+        const auto dc = GetDC(nullptr);
+        const int rows = GetDIBits(dc, info.hbmColor, 0, size, pixels.data(), &bitmap, DIB_RGB_COLORS);
+        ReleaseDC(nullptr, dc);
+        DeleteObject(info.hbmColor); DeleteObject(info.hbmMask);
+        check(rows == size, "native tray bitmap could not be read");
+        check((pixels.front() >> 24) == 0, "native tray icon lost transparent background");
+        int nativeColoured = 0;
+        for (const auto pixel : pixels)
+            if ((pixel >> 24) > 128 && ((pixel >> 8) & 0xff) > 150 && ((pixel >> 16) & 0xff) > 60) ++nativeColoured;
+        check(nativeColoured > size * size / 16, "native tray bitmap is blank or black");
+       #endif
+    }
+    std::cout << "PASS tray icon pixels, transparency and small/high-DPI sizes\n";
+}
+#if JUCE_WINDOWS
 static void shutdownTests(TestApplication& app) {
     juce::DocumentWindow main("Main", juce::Colours::black, juce::DocumentWindow::allButtons);
     juce::DocumentWindow settings("Settings", juce::Colours::black, juce::DocumentWindow::closeButton);
@@ -52,11 +96,17 @@ static void shutdownTests(TestApplication& app) {
     check(app.quitRequests == before, "recreated peer exited during query");
     std::cout << "PASS Windows shutdown query, cancellation and confirmation for visible/hidden windows and tray\n";
 }
+#endif
 int main() {
     juce::JUCEApplicationBase::createInstance = []() -> juce::JUCEApplicationBase* { return new TestApplication; };
     juce::ScopedJuceInitialiser_GUI runtime;
     TestApplication app;
-    try { shutdownTests(app); }
+    try {
+        trayIconTests();
+       #if JUCE_WINDOWS
+        shutdownTests(app);
+       #endif
+    }
     catch (const std::exception& error) { std::cerr << "FAIL " << error.what() << '\n'; return 1; }
     return 0;
 }
